@@ -13,6 +13,10 @@ an order to pay, an approval to grant, a refusal. Open the printed URL, enter ap
 real PayPal Sandbox ([below](#against-the-real-paypal-sandbox)); a real Sandbox buyer approval → capture is
 documented with ids and screenshots in [`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md).
 
+**Approve in chat (Nexconn):** approval requests can go to a Nexconn group chat, where an approver taps
+Approve / Reject and the guardrail state updates ([Approve in chat](#approve-in-chat-nexconn); off by default,
+offline mock included).
+
 **Bring your own agent:** the same guardrailed tools are an MCP server, so Claude Desktop, Codex or any
 MCP client can shop only inside the policy ([Use it from any MCP agent](#use-it-from-any-mcp-agent-claude-desktop--codex)).
 
@@ -161,7 +165,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 418 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 415 passed, 6 skipped)
+python -m pytest -q                                     # -> 477 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 472 passed, 8 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -274,7 +278,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `418 passed, 3 skipped` (421 tests; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` three more node-only tests are skipped: `415 passed, 6 skipped`).
+1. **Run the tests** — `python -m pytest -q` → see `477 passed, 3 skipped` (480 tests, 59 of them for the Nexconn chat channel; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` five more node-only tests are skipped: `472 passed, 8 skipped`).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -350,6 +354,78 @@ At runtime the owner can change the caps and allowlists in the **Policy & spend*
 `X-Owner-Token`) without a restart (repro step 10). The edit is stored in the database and overrides
 `policy.yaml` for that database (a fresh `DB_PATH` starts from `policy.yaml` again); every process sharing
 the database uses it from its next decision.
+
+## Approve in chat (Nexconn)
+
+*Added on the `nexconn` branch for the Nexconn Build Challenge 2026. Off unless `NEXCONN_MODE` is set; with it
+unset the app behaves exactly as above.*
+
+Approvals should reach the people who decide, where they already talk. With the Nexconn channel on, every
+**NEEDS_APPROVAL** the agent raises is posted as an approval card into a Nexconn **group channel**; an approver
+taps **Approve** / **Reject** (or types `approve APR-1A2B3C4D`) in the chat, and the guardrail state updates:
+
+```
+agent → BuyerService.request_approval ──► card in the Nexconn group (Platform Chat API, as the bot user)
+approver taps Approve in /chat (Nexconn Web Chat SDK) ──► message:send webhook (signed) ──►
+    room? approver? message seen before? ──► BuyerService.approve / reject  (the same guarded path as the
+    dashboard: hard rules re-checked, quote bound, claimed once) ──► outcome posted back into the room
+```
+
+| Piece | Where |
+|---|---|
+| Settings (`NEXCONN_*`), validated at startup | `app/nexconn/config.py` |
+| Platform Chat API client (request signing, SG/NA/SA hosts with backup-host failover) + in-memory mock | `app/nexconn/client.py` |
+| Card / outcome text, decision parsing (`approve APR-…`, or the structured `extra` the buttons send) | `app/nexconn/protocol.py` |
+| Webhook signature, time window, single-use nonce, `message:send` parsing | `app/nexconn/webhook.py` |
+| The channel: listens to approval events, posts (outbox + retry), handles decisions | `app/nexconn/channel.py` |
+| Routes: `/chat`, `/nexconn/session`, `/nexconn/webhook`, … | `app/nexconn/routes.py` |
+| Approver chat page on the Nexconn Web Chat SDK (`@nexconn/chat` 26.2.1) | `app/static/chat.html`, `chat.js`, `chat-transport.js` |
+
+**Rules the chat cannot bend.** Only user ids in `NEXCONN_APPROVER_IDS` can decide (anyone else gets a
+"not an approver" note and nothing changes); a decision must name the approval id (`ok`, `yes`, `approve` alone
+do nothing); the agent's own bot user cannot decide; messages from any other channel are ignored; every message id
+is acted on once (webhook retries, the relay and a replayed delivery cannot approve twice); a second decision
+on a closed approval is refused. A chat approval waives only the soft caps, exactly like the dashboard. Decisions
+made on the dashboard are posted to the room too, so the room is a complete audit trail. Posting is best effort:
+if Nexconn is down the purchase flow is unaffected, the post is kept as `FAILED` and `POST /nexconn/retry` re-sends.
+
+### Try it offline (no Nexconn account)
+
+In the offline block's shell, before starting the server:
+
+```bash
+export NEXCONN_MODE=mock NEXCONN_APPROVER_IDS=alice,bob
+```
+
+Start the server as in the block, open `$PUBLIC_BASE_URL/chat`, enter approver token `demo`, **Join room**
+as `alice`, then send the agent request from the block: the keyboard's approval card appears in the room;
+tap **Approve** and the outcome (order id, "decided by alice in chat") is posted back. The mock is an
+in-memory stand-in for Nexconn (same calls, no network); the dashboard's **Approval chat** chip links to it.
+
+### With a real Nexconn app (free plan)
+
+1. Create a free Nexconn account and app at <https://console.nexconn.ai> (Free Chat Plan, no card). On
+   **Key Management** copy the **App Key**, **App Secret** and the data center.
+2. Set `NEXCONN_MODE=live NEXCONN_APP_KEY=… NEXCONN_APP_SECRET=… NEXCONN_AREA=SG` (or `NA` / `SA`) and
+   `NEXCONN_APPROVER_IDS=…` in `.env`. The App Secret stays on the server (it signs server API calls and
+   checks webhooks); the browser only gets the App Key and a per-approver access token.
+3. Decisions come back through a webhook: in the console, **Chat → Chat settings → Webhooks**, set
+   `https://<your host>/nexconn/webhook` and select the `message:send` event. For a local run without a public
+   URL, set `NEXCONN_RELAY=1` instead: the `/chat` page then forwards each decision it sent (authorised by the
+   approver token; the webhook and the relay de-duplicate on the Nexconn message id).
+4. Start the server: it registers the bot and approver users and creates the group (`NEXCONN_GROUP_ID`) with
+   all of them in it. Open `/chat`, join as an approver: the page loads the pinned Web Chat SDK through an
+   import map (`/nexconn/sdk/*.mjs` → jsDelivr; `NEXCONN_SDK_BASE` to self-host) and connects with the token.
+
+`GET /nexconn/status` (approver token) lists what was posted and received, with errors.
+
+**Limits.** Nexconn's webhook signature covers the nonce and timestamp, not the body; we add a time window and
+single-use nonces kept in the database (so they hold across worker processes and restarts), and the approver
+allowlist bounds what a forged decision could do, but use an `https://` webhook URL. The approver token is one
+shared secret: whoever holds it can join the room as any listed approver (as on the dashboard, where it allows
+every approval). In live mode an open `DEMO_MODE` without `APPROVER_TOKEN` cannot issue Nexconn approver tokens
+or relay decisions (503). Only text messages are used (the structured part rides in the message's `extra`), so the cards
+read well in any Nexconn client. The mock does not emulate Nexconn beyond what the flow needs.
 
 ## Use it from any MCP agent (Claude Desktop / Codex)
 

@@ -108,18 +108,24 @@ class NexconnClient:
         return token
 
     def ensure_group(self, group_id: str, name: str, owner: str, members: list[str]) -> None:
+        invite = [m for m in dict.fromkeys(members) if m != owner]
+        if len(invite) > 30:                              # the create call invites at most 30 users
+            raise NexconnError("at most 30 members besides the owner")
         try:
             self._post("/v4/group-channel/create", {"channelId": group_id, "name": name, "owner": owner,
-                                                    "userIds": [m for m in members if m != owner][:30]})
+                                                    "userIds": invite})
             return
         except NexconnError as e:
             if e.code != GROUP_EXISTS:
                 raise
-        try:                                              # group already there: make sure everyone is in
-            self._post("/v4/group-channel/join", {"channelId": group_id, "userIds": members[:100]})
-        except NexconnError as e:
-            if e.code != ALREADY_MEMBER:
-                raise
+        # group already there (earlier run, or other approvers then): add each member, one by one so
+        # an "already a member" answer for one user cannot hide a missing one
+        for m in [owner, *invite]:
+            try:
+                self._post("/v4/group-channel/join", {"channelId": group_id, "userIds": [m]})
+            except NexconnError as e:
+                if e.code != ALREADY_MEMBER:
+                    raise
 
     def send_group_text(self, from_user: str, group_id: str, text: str, extra: dict | None = None) -> str:
         data = self._post("/v4/group-channel/message/send", {

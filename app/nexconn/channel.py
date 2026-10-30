@@ -17,6 +17,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -31,16 +32,26 @@ log = logging.getLogger("guardrail.nexconn")
 _DECIDER: contextvars.ContextVar[tuple[str, str | None] | None] = contextvars.ContextVar(
     "nexconn_decider", default=None)
 
+# A claim (post being sent, inbound message being handled, webhook nonce being processed) older
+# than this is treated as abandoned (process died mid-way) and may be taken over.
+STALE_CLAIM_S = 120
+
 _SCHEMA = (
+    # outbox: QUEUED -> SENDING (claimed) -> SENT | FAILED
     """CREATE TABLE IF NOT EXISTS nexconn_posts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         approval_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, extra TEXT NOT NULL,
         status TEXT NOT NULL, message_id TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL, sent_at TEXT)""",
-    "CREATE INDEX IF NOT EXISTS nexconn_posts_approval ON nexconn_posts(approval_id)",
+        claimed_at REAL, created_at TEXT NOT NULL, sent_at TEXT)""",
+    "CREATE INDEX IF NOT EXISTS nexconn_posts_status ON nexconn_posts(status)",
+    # inbound messages: PROCESSING (claimed) -> DONE; a failed attempt deletes its claim
     """CREATE TABLE IF NOT EXISTS nexconn_inbound (
         message_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, approval_id TEXT, decision TEXT,
-        outcome TEXT, source TEXT NOT NULL, received_at TEXT NOT NULL)""",
+        outcome TEXT, source TEXT NOT NULL, state TEXT NOT NULL, claimed_at REAL NOT NULL,
+        received_at TEXT NOT NULL)""",
+    # webhook nonces (durable, shared by every worker process on this DB): PROCESSING -> DONE
+    """CREATE TABLE IF NOT EXISTS nexconn_nonces (
+        nonce TEXT PRIMARY KEY, state TEXT NOT NULL, claimed_at REAL NOT NULL)""",
 )
 
 
@@ -59,6 +70,8 @@ class ChatApprovalChannel:
         self._q: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
         self._boot_lock = threading.Lock()
+        self._worker_lock = threading.Lock()
+        self._clock = time.time
         with svc.store.tx() as c:
             for stmt in _SCHEMA:
                 c.execute(stmt)
@@ -83,6 +96,11 @@ class ChatApprovalChannel:
                 return False
             self.ready, self.last_error = True, None
             return True
+
+    def start(self) -> None:
+        """Startup: bootstrap, then re-send posts a previous run left unsent."""
+        self.bootstrap()
+        self.retry_failed()
 
     def session(self, user_id: str | None) -> dict[str, Any]:
         """A Chat SDK session for an approver (the route requires the approver token)."""
@@ -124,9 +142,10 @@ class ChatApprovalChannel:
             self._q.put(post_id)
 
     def _ensure_worker(self) -> None:
-        if self._worker is None or not self._worker.is_alive():
-            self._worker = threading.Thread(target=self._run, name="nexconn-poster", daemon=True)
-            self._worker.start()
+        with self._worker_lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(target=self._run, name="nexconn-poster", daemon=True)
+                self._worker.start()
 
     def _run(self) -> None:
         while True:
@@ -149,9 +168,14 @@ class ChatApprovalChannel:
 
     def _send(self, post_id: int) -> None:
         st = self.svc.store
-        with st.lock:
-            row = st.conn.execute("SELECT * FROM nexconn_posts WHERE id=?", (post_id,)).fetchone()
-        if row is None or row["status"] == "SENT":
+        now = self._clock()
+        with st.tx() as c:   # claim: only one worker / process sends a given post
+            claimed = c.execute(
+                "UPDATE nexconn_posts SET status='SENDING', claimed_at=? WHERE id=? AND "
+                "(status IN ('QUEUED','FAILED') OR (status='SENDING' AND claimed_at < ?))",
+                (now, post_id, now - STALE_CLAIM_S)).rowcount
+            row = c.execute("SELECT * FROM nexconn_posts WHERE id=?", (post_id,)).fetchone()
+        if claimed != 1 or row is None:
             return
         try:
             if not self.bootstrap():
@@ -169,10 +193,14 @@ class ChatApprovalChannel:
                       "sent_at=? WHERE id=?", (mid, _now(), post_id))
 
     def retry_failed(self) -> int:
+        """Re-send posts that failed, were queued but never sent (e.g. the process stopped),
+        or whose sender died mid-send. Called at startup and by POST /nexconn/retry."""
         st = self.svc.store
         with st.lock:
             ids = [r["id"] for r in st.conn.execute(
-                "SELECT id FROM nexconn_posts WHERE status='FAILED' ORDER BY id").fetchall()]
+                "SELECT id FROM nexconn_posts WHERE status IN ('FAILED','QUEUED') OR "
+                "(status='SENDING' AND claimed_at < ?) ORDER BY id",
+                (self._clock() - STALE_CLAIM_S,)).fetchall()]
         for pid in ids:
             if self.dispatch == "inline":
                 self._send(pid)
@@ -195,13 +223,30 @@ class ChatApprovalChannel:
         decision = parse_decision(str(item.get("messageType") or ""), item.get("content"))
         if decision is None:
             return {"result": "IGNORED", "why": "not a decision"}
-        st = self.svc.store
-        with st.tx() as c:
-            fresh = c.execute("INSERT OR IGNORE INTO nexconn_inbound (message_id, user_id, approval_id, decision, "
-                              "source, received_at) VALUES (?,?,?,?,?,?)",
-                              (mid, uid, decision.approval_id, decision.decision, source, _now())).rowcount
-        if fresh != 1:
+        if not self._claim_inbound(mid, uid, decision.approval_id, decision.decision, source):
             return {"result": "DUPLICATE", "message_id": mid}
+        try:
+            return self._decide(mid, uid, decision)
+        except BaseException:
+            # unexpected failure: drop the claim so a webhook retry (or the relay) can redo it;
+            # BuyerService.approve/reject are safe to repeat (claimed once, replays return the order)
+            with self.svc.store.tx() as c:
+                c.execute("DELETE FROM nexconn_inbound WHERE message_id=? AND state='PROCESSING'", (mid,))
+            raise
+
+    def _claim_inbound(self, mid: str, uid: str, approval_id: str, decision: str, source: str) -> bool:
+        now = self._clock()
+        with self.svc.store.tx() as c:
+            if c.execute("INSERT OR IGNORE INTO nexconn_inbound (message_id, user_id, approval_id, decision, source, "
+                         "state, claimed_at, received_at) VALUES (?,?,?,?,?, 'PROCESSING', ?, ?)",
+                         (mid, uid, approval_id, decision, source, now, _now())).rowcount == 1:
+                return True
+            # taken over only if a previous handler died mid-way
+            return c.execute("UPDATE nexconn_inbound SET claimed_at=?, source=? WHERE message_id=? AND "
+                             "state='PROCESSING' AND claimed_at < ?",
+                             (now, source, mid, now - STALE_CLAIM_S)).rowcount == 1
+
+    def _decide(self, mid: str, uid: str, decision) -> dict[str, Any]:
         if uid not in self.cfg.approver_ids:
             self._record(mid, "NOT_AN_APPROVER")
             self.notice(decision.approval_id, f"{uid} is not an approver; nothing changed")
@@ -229,7 +274,32 @@ class ChatApprovalChannel:
 
     def _record(self, message_id: str, outcome: str) -> None:
         with self.svc.store.tx() as c:
-            c.execute("UPDATE nexconn_inbound SET outcome=? WHERE message_id=?", (outcome, message_id))
+            c.execute("UPDATE nexconn_inbound SET outcome=?, state='DONE' WHERE message_id=?", (outcome, message_id))
+
+    # ---- webhook nonces (durable: every worker process on this DB sees them) -----
+    def claim_nonce(self, nonce: str, window_s: float) -> str:
+        """'new' (claimed for processing), 'done' (a handled delivery: answer 200, do nothing)
+        or 'busy' (being processed right now: answer non-2xx so Nexconn retries later)."""
+        now = self._clock()
+        with self.svc.store.tx() as c:
+            c.execute("DELETE FROM nexconn_nonces WHERE claimed_at < ?", (now - 2 * window_s - STALE_CLAIM_S,))
+            if c.execute("INSERT OR IGNORE INTO nexconn_nonces (nonce, state, claimed_at) VALUES (?, 'PROCESSING', ?)",
+                         (nonce, now)).rowcount == 1:
+                return "new"
+            row = c.execute("SELECT state, claimed_at FROM nexconn_nonces WHERE nonce=?", (nonce,)).fetchone()
+            if row["state"] == "DONE":
+                return "done"
+            if row["claimed_at"] < now - STALE_CLAIM_S:
+                c.execute("UPDATE nexconn_nonces SET claimed_at=? WHERE nonce=?", (now, nonce))
+                return "new"
+            return "busy"
+
+    def finish_nonce(self, nonce: str, ok: bool) -> None:
+        with self.svc.store.tx() as c:
+            if ok:
+                c.execute("UPDATE nexconn_nonces SET state='DONE' WHERE nonce=?", (nonce,))
+            else:
+                c.execute("DELETE FROM nexconn_nonces WHERE nonce=? AND state='PROCESSING'", (nonce,))
 
     # ---- views ------------------------------------------------------------------
     def status(self) -> dict[str, Any]:
@@ -239,7 +309,8 @@ class ChatApprovalChannel:
                 "SELECT id, approval_id, kind, status, message_id, error, attempts, created_at, sent_at "
                 "FROM nexconn_posts ORDER BY id DESC LIMIT 200").fetchall()]
             inbound = [dict(r) for r in st.conn.execute(
-                "SELECT * FROM nexconn_inbound ORDER BY received_at DESC, rowid DESC LIMIT 200").fetchall()]
+                "SELECT message_id, user_id, approval_id, decision, outcome, source, state, received_at "
+                "FROM nexconn_inbound ORDER BY received_at DESC, rowid DESC LIMIT 200").fetchall()]
         return {**self.cfg.public(), "ready": self.ready, "last_error": self.last_error,
                 "client": getattr(self.client, "name", type(self.client).__name__),
                 "posts": posts, "inbound": inbound}

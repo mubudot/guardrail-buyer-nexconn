@@ -204,3 +204,45 @@ def test_card_text_is_bounded():
                                 "amount": "1.00", "currency": "USD", "justification": "j" * 5000,
                                 "reasons": json.dumps(["per-order cap"])})
     assert len(text) < 1000 and extra["approval_id"] == "APR-1A2B3C4D"
+
+
+# ---- Codex review 1 regressions ----------------------------------------------------------
+def test_unsent_posts_are_recovered_on_start(service):
+    client = MockNexconn()
+    ch = ChatApprovalChannel(service, CFG, client, dispatch="inline")
+    ch.bootstrap()
+    with service.store.tx() as c:         # a previous run queued a post and stopped before sending it
+        c.execute("INSERT INTO nexconn_posts (approval_id, kind, text, extra, status, created_at) "
+                  "VALUES ('APR-00000001', 'request', 'hi', '{}', 'QUEUED', 'now')")
+    ch.start()
+    assert [m["content"] for m in client.history(CFG.group_id)] == [text_content("hi", {})]
+    assert ch.status()["posts"][0]["status"] == "SENT"
+
+
+def test_a_post_is_sent_once_even_if_two_senders_race(service):
+    client = MockNexconn()
+    ch = ChatApprovalChannel(service, CFG, client, dispatch="inline")
+    ch.bootstrap()
+    with service.store.tx() as c:
+        pid = c.execute("INSERT INTO nexconn_posts (approval_id, kind, text, extra, status, created_at) "
+                        "VALUES ('APR-00000001', 'request', 'hi', '{}', 'QUEUED', 'now')").lastrowid
+    ch._send(pid)
+    ch._send(pid)
+    assert len(client.history(CFG.group_id)) == 1
+
+
+def test_stale_inbound_claim_is_taken_over(chat, service):
+    aid = ask(service)
+    assert chat._claim_inbound("M-dead", "alice", aid, "approve", "webhook")   # handler died here
+    assert say(chat, "alice", f"approve {aid}", mid="M-dead")["result"] == "DUPLICATE"
+    import time as _t
+    chat._clock = lambda: _t.time() + 1000
+    assert say(chat, "alice", f"approve {aid}", mid="M-dead")["result"] == "ORDER_PLACED"
+
+
+def test_listener_snapshot_failure_is_contained(service, monkeypatch):
+    service.add_approval_listener(lambda *a: None)
+    real_get = service.store.get
+    monkeypatch.setattr(service.store, "get", lambda t, i: (_ for _ in ()).throw(RuntimeError("x"))
+                        if t == "approvals" else real_get(t, i))
+    assert service.request_approval("P-1003", 1, "x")["result"] == "APPROVAL_REQUESTED"

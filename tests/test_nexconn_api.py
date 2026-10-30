@@ -277,3 +277,91 @@ def test_sign_matches_docs_formula():
 def test_mock_client_unknown_group():
     with pytest.raises(NexconnError):
         MockNexconn().send_group_text("a", "nogroup", "hi")
+
+
+# ---- Codex review 1 regressions ----------------------------------------------------------
+def test_live_open_demo_never_issues_approver_tokens(service, monkeypatch):
+    fake = FakeNexconnServer()
+    client = NexconnClient(LIVE, http=httpx.Client(transport=httpx.MockTransport(fake)))
+    ch = ChatApprovalChannel(service, LIVE, client, dispatch="inline")
+    monkeypatch.setenv("NEXCONN_RELAY", "1")
+    c = TestClient(create_app(service, approver_token="", demo_mode=True, agent_rate_limit=None,
+                              tools_rate_limit=None, nexconn=ch))
+    assert c.post("/nexconn/session").status_code == 503
+    assert c.post("/nexconn/relay", json={"message_id": "m", "user_id": "alice", "text": "x"}).status_code == 503
+
+
+def test_nonce_replay_is_refused_after_restart(service):
+    c, ch = live_app(service, FakeNexconnServer())
+    aid = service.request_approval("P-1003", 1, "x")["approval_id"]
+    h, body = signed(decision_event(aid, mid="WS-A"))
+    assert c.post("/nexconn/webhook", headers=h, content=body).json()["handled"][0]["result"] == "ORDER_PLACED"
+    # "restart": a new app + router on the same database; the replay swaps in another message id
+    c2, _ = live_app(service, FakeNexconnServer())
+    other = service.request_approval("P-1003", 1, "y")["approval_id"]
+    _, forged = signed(decision_event(other, mid="WS-B"))
+    r = c2.post("/nexconn/webhook", headers=h, content=forged)
+    assert r.json() == {"ok": True, "duplicate_delivery": True}
+    assert service.store.get("approvals", other)["status"] == "PENDING"
+
+
+def test_nonce_in_flight_is_busy_and_failed_nonce_is_released(service):
+    _, ch = live_app(service, FakeNexconnServer())
+    assert ch.claim_nonce("n", 300) == "new"
+    assert ch.claim_nonce("n", 300) == "busy"
+    ch.finish_nonce("n", ok=False)
+    assert ch.claim_nonce("n", 300) == "new"          # a failed delivery can be retried
+    ch.finish_nonce("n", ok=True)
+    assert ch.claim_nonce("n", 300) == "done"
+    assert ch.claim_nonce("stale", 300) == "new"
+    ch._clock = lambda: time.time() + 1000             # its handler died long ago: taken over
+    assert ch.claim_nonce("stale", 300) == "new"
+
+
+def test_webhook_failure_lets_the_retry_finish_the_decision(service, monkeypatch):
+    c, ch = live_app(service, FakeNexconnServer())
+    aid = service.request_approval("P-1003", 1, "x")["approval_id"]
+    real = service.approve
+    calls = {"n": 0}
+
+    def flaky(approval_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database is locked")
+        return real(approval_id)
+    monkeypatch.setattr(service, "approve", flaky)
+    h, body = signed(decision_event(aid, mid="WS-F"))
+    with pytest.raises(RuntimeError):
+        c.post("/nexconn/webhook", headers=h, content=body)
+    h2, _ = signed({}, nonce="n-retry")
+    r = c.post("/nexconn/webhook", headers=h2, content=body)   # Nexconn's retry (new nonce, same message)
+    assert r.json()["handled"][0]["result"] == "ORDER_PLACED"
+    assert service.store.get("approvals", aid)["status"] == "APPROVED"
+
+
+def test_all_items_of_a_large_delivery_are_handled(service):
+    c, _ = live_app(service, FakeNexconnServer())
+    aids = [service.request_approval("P-2001", 10, f"r{i}")["approval_id"] for i in range(3)]
+    env = {"type": "message:send", "id": "e", "time": 1, "data": [
+        {"userId": "alice", "channelId": "grbapprovals", "channelType": 3, "messageType": "RC:TxtMsg",
+         "content": text_content("hello"), "messageId": f"X{i}", "time": 1, "os": "Websocket"} for i in range(60)]}
+    env["data"].append(decision_event(aids[0], mid="LAST")["data"][0])
+    h, body = signed(env)
+    out = c.post("/nexconn/webhook", headers=h, content=body).json()["handled"]
+    assert len(out) == 61 and {o["result"] for o in out[:60]} == {"IGNORED"}
+    assert out[-1]["result"] == "ORDER_PLACED" and out[-1]["approval_id"] == aids[0]
+
+
+def test_group_bootstrap_joins_members_one_by_one_when_group_exists(service):
+    fake = FakeNexconnServer()
+    cfg = NexconnConfig(mode="live", app_key="KEY", app_secret="SECRET", approver_ids=("alice", "bob"))
+    cl = NexconnClient(cfg, http=httpx.Client(transport=httpx.MockTransport(fake)))
+    cl.ensure_group("g1", "G", "grbagent", ["grbagent", "alice", "bob"])
+    joins = [b["userIds"] for _, p, b in fake.calls if p == "/v4/group-channel/join"]
+    assert joins == [["grbagent"], ["alice"], ["bob"]]
+    with pytest.raises(NexconnError):
+        cl.ensure_group("g1", "G", "o", [f"u{i}" for i in range(31)])
+    with pytest.raises(NexconnConfigError, match="at most 29"):
+        NexconnConfig.from_env({"NEXCONN_MODE": "mock", "NEXCONN_APPROVER_IDS": ",".join(f"a{i}" for i in range(30))})
+    with pytest.raises(NexconnConfigError):
+        NexconnConfig.from_env({"NEXCONN_MODE": "mock", "NEXCONN_APPROVER_IDS": "a,a"})

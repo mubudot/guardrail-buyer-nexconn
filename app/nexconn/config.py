@@ -21,6 +21,7 @@ API_HOSTS = {
     "NA": ("api.us-light-api.com", "api-b.us-light-api.com"),
     "SA": ("api.sau-light-api.com", "api-b.sau-light-api.com"),
 }
+MAX_APPROVERS = 29     # group create invites at most 30 users; the bot is the owner
 SDK_VERSION = "26.2.1"  # @nexconn/chat and @nexconn/engine must be the same version
 DEFAULT_SDK_BASE = "https://cdn.jsdelivr.net/npm"
 _ID = re.compile(r"[A-Za-z0-9]{1,64}")  # Nexconn user / group ids: letters and digits, max 64
@@ -93,6 +94,9 @@ class NexconnConfig:
                 raise NexconnConfigError(f"{name}={value!r}: letters and digits only, 1-64 characters")
         if not self.approver_ids:
             raise NexconnConfigError("NEXCONN_APPROVER_IDS is empty: name at least one approver user id")
+        if len(self.approver_ids) > MAX_APPROVERS or len(set(self.approver_ids)) != len(self.approver_ids):
+            raise NexconnConfigError(f"NEXCONN_APPROVER_IDS: at most {MAX_APPROVERS} distinct user ids "
+                                     "(they are all invited when the group is created)")
         for a in self.approver_ids:
             if not _ID.fullmatch(a):
                 raise NexconnConfigError(f"NEXCONN_APPROVER_IDS entry {a!r}: letters and digits only, 1-64")

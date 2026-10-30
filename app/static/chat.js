@@ -16,6 +16,7 @@ function el(tag, attrs = {}, ...kids) {
 
 const state = {cfg: null, session: null, transport: null, seen: new Set(), outcomes: new Map(), cards: new Map()};
 const APR = /^APR-[0-9A-F]{8}$/;
+const COMMAND = /^\s*\/?(approve|reject)\s+(APR-[0-9A-F]{8})\s*[.!]?\s*$/i;  // same rule as the server
 
 function showError(msg) { const e = $("join-error"); e.textContent = msg; e.hidden = !msg; }
 function setConn(s) {
@@ -93,16 +94,28 @@ function onMessages(list) {
   if (atBottom || list.length > 1) box.scrollTop = box.scrollHeight;
 }
 
+const isDecision = (text, extra) => (extra && extra.grb === "decision") || COMMAND.test(text);
+
+async function relay(messageId, text, extra) {
+  // live mode, local run without a public webhook: tell our server about the decision we sent
+  const r = await fetch("/nexconn/relay", {method: "POST", headers: authHeaders(),
+    body: JSON.stringify({message_id: messageId, user_id: state.session.user_id, text, extra: extra || null})});
+  if (!r.ok) {
+    const detail = (await r.json().catch(() => ({}))).detail;
+    throw new Error(`the decision was posted in the room but the server did not take it (HTTP ${r.status}` +
+                    `${detail ? `: ${detail}` : ""}); try again`);
+  }
+  return r.json();
+}
+
 async function send(text, extra) {
   const {messageId} = await state.transport.send(text, extra);
-  // live mode, local run without a public webhook: tell our server about the decision we sent
-  if (state.session.mode === "live" && state.cfg.relay && extra && extra.grb === "decision") {
-    await fetch("/nexconn/relay", {method: "POST", headers: authHeaders(),
-      body: JSON.stringify({message_id: messageId, user_id: state.session.user_id, text, extra})});
-  }
   if (state.session.mode === "live") {   // the SDK does not echo our own message back
     renderMessage({id: messageId, from: state.session.user_id, text, extra, time: Date.now()});
     const box = $("messages"); box.scrollTop = box.scrollHeight;
+  }
+  if (state.session.mode === "live" && state.cfg.relay && isDecision(text, extra)) {
+    await relay(messageId, text, extra);
   }
 }
 
@@ -124,13 +137,19 @@ async function join(ev) {
     state.session = await r.json();
     localStorage.setItem("approverToken", $("token").value);
     state.transport = await createTransport(state.session);
-    $("join").hidden = true;
-    $("room").hidden = false;
     $("room-name").textContent = `Approval room · ${state.session.group_id}`;
     $("room-who").textContent = `You are ${state.session.user_id}. Approvers: ${state.session.approver_ids.join(", ")}`;
-    await state.transport.start(onMessages, setConn);
+    await state.transport.start(onMessages, setConn);   // show the room only once connected
+    $("join").hidden = true;
+    $("room").hidden = false;
     $("text").focus();
   } catch (e) {
+    try { state.transport?.stop(); } catch { /* already stopped */ }
+    state.transport = null;
+    state.seen.clear(); state.cards.clear(); state.outcomes.clear();
+    $("messages").replaceChildren();
+    $("room").hidden = true;
+    $("join").hidden = false;
     showError(e.message || String(e));
     $("join-btn").disabled = false;
   }

@@ -7,10 +7,11 @@ have userId, channelId, channelType, messageType, content (string), messageId, t
 
 The signature covers only the nonce and timestamp, not the body, so on top of the check the
 docs ask for we (a) refuse timestamps outside a small window and (b) refuse a nonce that was
-already handled, so a captured request cannot be replayed later. A nonce is recorded only
-after its delivery was handled, so a retry of a delivery we failed to handle is still
-accepted; a replay of a handled one is answered 200 and ignored (no retry storm). Inbound
-messages are also de-duplicated on their message id (see channel.py).
+already handled (nonces live in the database, see ChatApprovalChannel.claim_nonce), so a
+captured request cannot be replayed later, on any worker, or after a restart. A nonce is
+marked done only after its delivery was handled, so a retry of a delivery we failed to
+handle is still accepted; a replay of a handled one is answered 200 and ignored (no retry
+storm). Inbound messages are also de-duplicated on their message id (see channel.py).
 
 Limitation (documented in the README): because the body is not signed, an attacker who can
 read a delivery in transit could reuse its headers with another body before the original
@@ -21,9 +22,7 @@ from __future__ import annotations
 
 import hmac
 import json
-import threading
 import time
-from collections import OrderedDict
 from typing import Any, Callable
 
 from .client import sign
@@ -37,45 +36,21 @@ class WebhookRejected(Exception):
         self.status, self.reason = status, reason
 
 
-class NonceCache:
-    """Nonces seen within the skew window (bounded; oldest dropped first)."""
-
-    def __init__(self, ttl_s: float, max_items: int = 10_000, clock: Callable[[], float] = time.time):
-        self.ttl, self.max, self.clock = ttl_s, max_items, clock
-        self._seen: OrderedDict[str, float] = OrderedDict()
-        self._lock = threading.Lock()
-
-    def _prune(self, now: float) -> None:
-        while self._seen:
-            _, t = next(iter(self._seen.items()))
-            if now - t <= 2 * self.ttl and len(self._seen) < self.max:
-                break
-            self._seen.popitem(last=False)
-
-    def seen(self, key: str) -> bool:
-        with self._lock:
-            self._prune(self.clock())
-            return key in self._seen
-
-    def add(self, key: str) -> None:
-        with self._lock:
-            now = self.clock()
-            self._prune(now)
-            self._seen[key] = now
-
-
 class WebhookVerifier:
     def __init__(self, app_key: str, app_secret: str, max_skew_s: int = 300,
                  clock: Callable[[], float] = time.time):
         self.app_key, self.app_secret = app_key, app_secret
         self.max_skew_ms = max_skew_s * 1000
         self.clock = clock
-        self.nonces = NonceCache(max_skew_s, clock=clock)
 
-    def verify(self, headers: dict[str, str], body: bytes) -> tuple[dict[str, Any] | None, str]:
-        """Return (envelope, nonce), or (None, nonce) for a replay of a delivery already
-        handled; raise WebhookRejected otherwise. `headers` keys are lower-case. Call
-        `handled(nonce)` once the delivery was processed."""
+    @property
+    def window_s(self) -> float:
+        return self.max_skew_ms / 1000
+
+    def verify(self, headers: dict[str, str], body: bytes) -> tuple[dict[str, Any], str]:
+        """Return (envelope, nonce) or raise WebhookRejected. `headers` keys are lower-case.
+        Replay protection (single-use nonce) is the caller's job: ChatApprovalChannel.claim_nonce
+        keeps nonces in the database, so it holds across worker processes and restarts."""
         if len(body) > MAX_BODY:
             raise WebhookRejected(413, "body too large")
         nonce = headers.get("nonce") or ""
@@ -90,12 +65,7 @@ class WebhookVerifier:
             raise WebhookRejected(401, "bad signature")
         if abs(int(self.clock() * 1000) - int(ts)) > self.max_skew_ms:
             raise WebhookRejected(401, "timestamp outside the allowed window")
-        if self.nonces.seen(nonce):
-            return None, nonce
         return parse_envelope(body), nonce
-
-    def handled(self, nonce: str) -> None:
-        self.nonces.add(nonce)
 
 
 def parse_envelope(body: bytes) -> dict[str, Any]:
@@ -114,7 +84,7 @@ def message_events(env: dict[str, Any]) -> list[dict[str, Any]]:
     if env.get("type") != "message:send":
         return []
     out = []
-    for item in env["data"][:50]:
+    for item in env["data"]:          # bounded by MAX_BODY
         if not isinstance(item, dict):
             continue
         if all(isinstance(item.get(k), str) and item.get(k) for k in ("userId", "channelId", "messageType",

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -39,9 +40,17 @@ class RelayBody(BaseModel):
     extra: dict[str, Any] | None = None
 
 
-def build_router(channel: ChatApprovalChannel, require_approver, static_dir, relay: bool = False) -> APIRouter:
+def build_router(channel: ChatApprovalChannel, require_approver, static_dir, relay: bool = False,
+                 approver_auth: bool = True) -> APIRouter:
     cfg = channel.cfg
     r = APIRouter()
+
+    def require_real_approver():
+        # An open demo (DEMO_MODE=1, no APPROVER_TOKEN) must never hand out a real Nexconn approver
+        # identity or accept relayed decisions: in live mode both need a configured token.
+        if cfg.mode == "live" and not approver_auth:
+            raise HTTPException(503, "NEXCONN_MODE=live needs APPROVER_TOKEN set (an open DEMO_MODE cannot "
+                                     "issue Nexconn approver tokens or relay decisions)")
     verifier = WebhookVerifier(cfg.app_key, cfg.app_secret, cfg.webhook_max_skew_s) \
         if cfg.mode == "live" else None
 
@@ -59,7 +68,7 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
             raise HTTPException(404)
         return RedirectResponse(f"{cfg.sdk_base}/@nexconn/{name}@{SDK_VERSION}/index.mjs", status_code=302)
 
-    @r.post("/nexconn/session", dependencies=[Depends(require_approver)])
+    @r.post("/nexconn/session", dependencies=[Depends(require_real_approver), Depends(require_approver)])
     def session(as_user: str | None = None):
         try:
             return channel.session(as_user)
@@ -85,13 +94,22 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
             env, nonce = verifier.verify({k.lower(): v for k, v in request.headers.items()}, body)
         except WebhookRejected as e:
             raise HTTPException(e.status, e.reason)
-        if env is None:
+        claim = await run_in_threadpool(channel.claim_nonce, nonce, verifier.window_s)
+        if claim == "done":
             return {"ok": True, "duplicate_delivery": True}
-        handled = [channel.handle_message(item, "webhook") for item in message_events(env)]
-        verifier.handled(nonce)
+        if claim == "busy":
+            raise HTTPException(409, "this delivery is being processed; retry later")
+        ok = False
+        try:
+            # handle_message may create a PayPal order: keep it off the event loop
+            handled = [await run_in_threadpool(channel.handle_message, item, "webhook")
+                       for item in message_events(env)]
+            ok = True
+        finally:
+            await run_in_threadpool(channel.finish_nonce, nonce, ok)
         return {"ok": True, "handled": handled}
 
-    @r.post("/nexconn/relay", dependencies=[Depends(require_approver)])
+    @r.post("/nexconn/relay", dependencies=[Depends(require_real_approver), Depends(require_approver)])
     def relay_decision(body: RelayBody):
         if not (relay and cfg.mode == "live"):
             raise HTTPException(404, "relay is off (NEXCONN_MODE=live with NEXCONN_RELAY=1 enables it)")

@@ -184,11 +184,13 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     chat = build_channel(svc, nexconn_cfg) if nexconn == "env" else nexconn
     app.state.nexconn = chat
     if chat is not None:
-        app.include_router(build_nexconn_router(chat, require_approver, STATIC, relay_enabled()))
-        if chat.cfg.mode == "live":   # register users + group without delaying startup
-            threading.Thread(target=chat.bootstrap, name="nexconn-bootstrap", daemon=True).start()
+        app.include_router(build_nexconn_router(chat, require_approver, STATIC, relay_enabled(),
+                                                approver_auth=bool(token)))
+        if chat.cfg.mode == "live":   # register users + group, re-send unsent posts, without delaying startup
+            threading.Thread(target=chat.start, name="nexconn-bootstrap", daemon=True).start()
         else:
-            chat.bootstrap()
+            chat.start()
+        app.router.on_shutdown.append(lambda: chat.drain(5.0))
 
     # ---- dashboard -----------------------------------------------------
     app.mount("/static", StaticFiles(directory=STATIC), name="static")

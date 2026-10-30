@@ -90,7 +90,11 @@ class BuyerService(ReportingMixin, PolicyAdminMixin):
     def _emit_approval(self, event: str, approval_id: str, result: dict[str, Any]) -> None:
         if not self._approval_listeners:
             return
-        row = self.store.get("approvals", approval_id)
+        try:
+            row = self.store.get("approvals", approval_id)
+        except Exception:  # best effort: the decision itself is already committed
+            log.exception("approval listener snapshot failed for %s (%s)", approval_id, event)
+            return
         for fn in list(self._approval_listeners):
             try:
                 fn(event, row, result)
