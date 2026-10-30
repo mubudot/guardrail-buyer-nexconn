@@ -31,3 +31,8 @@ the committed outcome rebuilt from the stored approval / order.
 on a partial unique index). Recovery could credit a refused or replayed chat decision → only a chat message
 recorded as having made the decision is credited; otherwise the post says it was decided earlier and posted
 after a restart.
+
+## After the live end-to-end test (docs/NEXCONN_LIVE_E2E.md)
+- Live review 1 (commit 56a0b88: SDK status names on the connection chip, decided cards drop their buttons): no substantive issues.
+- Live review 2 (webhook / channel / chat page against the live facts): 2 findings, both fixed in ee418b1 — a re-sent request card (same approval, new message id) kept its buttons after the outcome (P2; every copy is now closed), and the E2E doc said every webhook got 200 although the forged ones got 401 (P3).
+- Live review 3 (verifying ee418b1): no substantive issues.
