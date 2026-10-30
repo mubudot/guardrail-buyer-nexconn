@@ -43,7 +43,8 @@ For this challenge we added a **Nexconn approval room**:
    quote and can be claimed only once. Approval waives only the soft caps.
 4. The outcome — PayPal order created, paid, refused by a hard rule, or rejected — is posted back into the
    room, with who decided and where. Decisions made on the dashboard are mirrored into the room too, so the chat
-   is a complete, human-readable audit trail of every spend decision.
+   shows every approval request and how it ended (the dashboard's audit log stays the full record of all
+   guardrail decisions, including automatic in-policy purchases and denials).
 
 ### Features that use Nexconn
 
@@ -64,7 +65,7 @@ Sandbox integration, the Claude / offline agents, the MCP server and the AG Grid
 the Nexconn server API client (request signing, data-center failover), the webhook receiver (signature, time
 window, single-use nonces), the approval channel (cards, decision handling, approver allowlist, duplicate-safe,
 outbox with retry), the approver chat page on the Web Chat SDK, an offline mock of the room for tests and demos,
-and 59 new automated tests (480 in total). The only change to the existing core is an observer hook on approval events.
+and 63 new automated tests (484 in total). The only change to the existing core is an observer hook on approval events.
 
 ### Safety properties
 

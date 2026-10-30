@@ -233,11 +233,43 @@ def test_a_post_is_sent_once_even_if_two_senders_race(service):
 
 def test_stale_inbound_claim_is_taken_over(chat, service):
     aid = ask(service)
-    assert chat._claim_inbound("M-dead", "alice", aid, "approve", "webhook")   # handler died here
-    assert say(chat, "alice", f"approve {aid}", mid="M-dead")["result"] == "DUPLICATE"
+    assert chat._claim_inbound("M-dead", "alice", aid, "approve", "webhook") == "new"   # handler died here
+    from app.nexconn.channel import InboundBusy
+    with pytest.raises(InboundBusy):          # in progress: not acknowledged as a duplicate
+        say(chat, "alice", f"approve {aid}", mid="M-dead")
     import time as _t
     chat._clock = lambda: _t.time() + 1000
     assert say(chat, "alice", f"approve {aid}", mid="M-dead")["result"] == "ORDER_PLACED"
+    assert say(chat, "alice", f"approve {aid}", mid="M-dead")["result"] == "DUPLICATE"
+
+
+def test_abandoned_decision_is_finished_without_redelivery(chat, service):
+    aid = ask(service)
+    chat._claim_inbound("M-crash", "alice", aid, "approve", "webhook")      # process died after claiming
+    assert chat.recover_inbound() == 0                                       # not stale yet
+    import time as _t
+    chat._clock = lambda: _t.time() + 1000
+    assert chat.recover()["decisions"] == 1
+    assert service.store.get("approvals", aid)["status"] == "APPROVED"
+    assert chat.status()["inbound"][0]["state"] == "DONE"
+
+
+def test_automatic_retry_respects_claims_and_attempt_cap(service):
+    client = MockNexconn()
+    ch = ChatApprovalChannel(service, CFG, client, dispatch="inline")
+    ch.bootstrap()
+    import time as _t
+    with service.store.tx() as c:
+        c.execute("INSERT INTO nexconn_posts (approval_id, kind, text, extra, status, claimed_at, created_at) "
+                  "VALUES ('APR-00000001', 'request', 'sending', '{}', 'SENDING', ?, '2026-01-01T00:00:00+00:00')",
+                  (_t.time(),))
+        c.execute("INSERT INTO nexconn_posts (approval_id, kind, text, extra, status, attempts, created_at) "
+                  "VALUES ('APR-00000002', 'request', 'gave up', '{}', 'FAILED', 5, '2026-01-01T00:00:00+00:00')")
+    assert ch.retry_failed(auto=True) == 0          # one is being sent right now, the other hit the cap
+    ch._clock = lambda: _t.time() + 1000
+    assert ch.retry_failed(auto=True) == 1          # the sender died: picked up
+    assert ch.retry_failed() == 1                   # manual retry has no attempt cap
+    assert len(client.history(CFG.group_id)) == 2
 
 
 def test_listener_snapshot_failure_is_contained(service, monkeypatch):

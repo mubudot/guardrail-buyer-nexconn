@@ -365,3 +365,29 @@ def test_group_bootstrap_joins_members_one_by_one_when_group_exists(service):
         NexconnConfig.from_env({"NEXCONN_MODE": "mock", "NEXCONN_APPROVER_IDS": ",".join(f"a{i}" for i in range(30))})
     with pytest.raises(NexconnConfigError):
         NexconnConfig.from_env({"NEXCONN_MODE": "mock", "NEXCONN_APPROVER_IDS": "a,a"})
+
+
+# ---- Codex review 2 regressions ----------------------------------------------------------
+def test_nonce_timestamp_resplit_is_not_a_new_delivery(service):
+    c, _ = live_app(service, FakeNexconnServer())
+    aid = service.request_approval("P-1003", 1, "x")["approval_id"]
+    ts = str(int(time.time() * 1000))
+    h, body = signed(decision_event(aid, mid="WS-R"), nonce="delivery0", ts=ts)
+    assert c.post("/nexconn/webhook", headers=h, content=body).status_code == 200
+    other = service.request_approval("P-1003", 1, "y")["approval_id"]
+    forged = dict(h, Nonce="delivery", Timestamp="0" + ts)          # same signed string, re-split
+    assert sign("SECRET", "delivery", "0" + ts) == h["Signature"]
+    _, fbody = signed(decision_event(other, mid="WS-S"))
+    assert c.post("/nexconn/webhook", headers=forged, content=fbody).status_code == 401   # leading zero
+    resplit = dict(h, Nonce="deliver", Timestamp="y0" + ts)
+    assert c.post("/nexconn/webhook", headers=resplit, content=fbody).status_code == 401  # not digits
+    assert service.store.get("approvals", other)["status"] == "PENDING"
+
+
+def test_busy_message_is_not_acknowledged(service):
+    c, ch = live_app(service, FakeNexconnServer())
+    aid = service.request_approval("P-1003", 1, "x")["approval_id"]
+    ch._claim_inbound("WS-BUSY", "alice", aid, "approve", "relay")       # another request is on it
+    h, body = signed(decision_event(aid, mid="WS-BUSY"))
+    assert c.post("/nexconn/webhook", headers=h, content=body).status_code == 409
+    assert c.post("/nexconn/webhook", headers=h, content=body).status_code == 409   # nonce was released

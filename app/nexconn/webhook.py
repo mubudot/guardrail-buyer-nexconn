@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 import time
 from typing import Any, Callable
 
 from .client import sign
 
 MAX_BODY = 64 * 1024
+_CANONICAL_TS = re.compile(r"[1-9][0-9]{0,15}")  # ASCII digits, no leading zero
 
 
 class WebhookRejected(Exception):
@@ -48,7 +50,7 @@ class WebhookVerifier:
         return self.max_skew_ms / 1000
 
     def verify(self, headers: dict[str, str], body: bytes) -> tuple[dict[str, Any], str]:
-        """Return (envelope, nonce) or raise WebhookRejected. `headers` keys are lower-case.
+        """Return (envelope, replay_key) or raise WebhookRejected. `headers` keys are lower-case.
         Replay protection (single-use nonce) is the caller's job: ChatApprovalChannel.claim_nonce
         keeps nonces in the database, so it holds across worker processes and restarts."""
         if len(body) > MAX_BODY:
@@ -57,7 +59,7 @@ class WebhookVerifier:
         ts = headers.get("timestamp") or ""
         sig = (headers.get("signature") or "").lower()
         key = headers.get("appkey") or headers.get("app-key") or ""
-        if not (nonce and ts and sig) or len(nonce) > 64 or not ts.isdigit() or len(ts) > 16:
+        if not (nonce and sig) or len(nonce) > 64 or not _CANONICAL_TS.fullmatch(ts):
             raise WebhookRejected(401, "missing or malformed signature headers")
         if not hmac.compare_digest(key.encode(), self.app_key.encode()):
             raise WebhookRejected(401, "wrong AppKey")
@@ -65,7 +67,10 @@ class WebhookVerifier:
             raise WebhookRejected(401, "bad signature")
         if abs(int(self.clock() * 1000) - int(ts)) > self.max_skew_ms:
             raise WebhookRejected(401, "timestamp outside the allowed window")
-        return parse_envelope(body), nonce
+        # The signature covers the plain concatenation nonce+timestamp, so ("abc0", "T") and
+        # ("abc", "0T") sign the same string. Timestamps must be canonical (no leading zero) AND the
+        # replay key is the signed string itself, so no re-split of a used pair is ever new.
+        return parse_envelope(body), f"{nonce}{ts}"
 
 
 def parse_envelope(body: bytes) -> dict[str, Any]:

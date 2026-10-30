@@ -21,7 +21,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from .channel import ChatApprovalChannel
+from .channel import ChatApprovalChannel, InboundBusy
 from .client import MockNexconn, NexconnError, text_content
 from .config import SDK_VERSION
 from .protocol import APPROVAL_ID
@@ -83,7 +83,8 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
 
     @r.post("/nexconn/retry", dependencies=[Depends(require_approver)])
     def retry():
-        return {"requeued": channel.retry_failed()}
+        out = channel.recover()
+        return {"requeued": out["posts"], "decisions_finished": out["decisions"]}
 
     @r.post("/nexconn/webhook")
     async def webhook(request: Request):
@@ -105,6 +106,8 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
             handled = [await run_in_threadpool(channel.handle_message, item, "webhook")
                        for item in message_events(env)]
             ok = True
+        except InboundBusy:
+            raise HTTPException(409, "a message in this delivery is being processed; retry later")
         finally:
             await run_in_threadpool(channel.finish_nonce, nonce, ok)
         return {"ok": True, "handled": handled}
@@ -113,8 +116,11 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
     def relay_decision(body: RelayBody):
         if not (relay and cfg.mode == "live"):
             raise HTTPException(404, "relay is off (NEXCONN_MODE=live with NEXCONN_RELAY=1 enables it)")
-        return channel.handle_message(_item(cfg.group_id, body.user_id, body.message_id, body.text, body.extra),
-                                      "relay")
+        try:
+            return channel.handle_message(_item(cfg.group_id, body.user_id, body.message_id, body.text,
+                                                body.extra), "relay")
+        except InboundBusy:
+            raise HTTPException(409, "this decision is being processed; retry later")
 
     # ---- mock transport (offline demo and tests) ---------------------------------
     def mock_user(x_nexconn_token: str | None) -> str:
