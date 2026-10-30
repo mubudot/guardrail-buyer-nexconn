@@ -278,3 +278,22 @@ def test_listener_snapshot_failure_is_contained(service, monkeypatch):
     monkeypatch.setattr(service.store, "get", lambda t, i: (_ for _ in ()).throw(RuntimeError("x"))
                         if t == "approvals" else real_get(t, i))
     assert service.request_approval("P-1003", 1, "x")["result"] == "APPROVAL_REQUESTED"
+
+
+# ---- Codex review 3 regression -----------------------------------------------------------
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+def test_outcome_is_posted_even_if_the_process_died_before_the_listener(chat, service, monkeypatch, decision):
+    aid = ask(service)
+    chat._claim_inbound("M-x", "alice", aid, decision, "webhook")
+    monkeypatch.setattr(service, "_approval_listeners", [])        # "crash" right after the decision commits
+    (service.approve if decision == "approve" else service.reject)(aid)
+    monkeypatch.undo()
+    import time as _t
+    chat._clock = lambda: _t.time() + 1000
+    out = chat.recover()
+    assert out["decisions"] == 1 and out["outcomes"] == 1
+    last = room(chat)[-1]
+    assert last["extra"]["grb"] == "outcome" and last["extra"]["approval_id"] == aid
+    assert last["extra"]["result"] == ("ORDER_PLACED" if decision == "approve" else "REJECTED")
+    assert "decided by alice in chat" in last["text"]
+    assert chat.recover()["outcomes"] == 0                          # posted once

@@ -117,7 +117,41 @@ class ChatApprovalChannel:
             self._ensure_worker()
 
     def recover(self, auto: bool = False) -> dict[str, int]:
-        return {"posts": self.retry_failed(auto=auto), "decisions": self.recover_inbound()}
+        decisions = self.recover_inbound()
+        outcomes = self.recover_outcomes()
+        return {"posts": self.retry_failed(auto=auto), "decisions": decisions, "outcomes": outcomes}
+
+    def recover_outcomes(self) -> int:
+        """Post the outcome of approvals that were carded in the room and decided (anywhere) but
+        whose outcome was never queued, e.g. the process died between the decision's commit and
+        its listener. Rebuilt from the stored approval / order, so it is the committed outcome."""
+        st = self.svc.store
+        cutoff = _iso(self._clock() - STALE_CLAIM_S)   # leave a just-decided approval to its listener
+        with st.lock:
+            rows = [dict(r) for r in st.conn.execute(
+                "SELECT a.id, a.status, a.order_id, a.decided_at FROM approvals a "
+                "WHERE a.status NOT IN ('PENDING','EXECUTING') AND a.decided_at IS NOT NULL AND a.decided_at < ? "
+                "AND EXISTS (SELECT 1 FROM nexconn_posts p WHERE p.approval_id=a.id AND p.kind='request') "
+                "AND NOT EXISTS (SELECT 1 FROM nexconn_posts p WHERE p.approval_id=a.id AND p.kind='outcome')",
+                (cutoff,)).fetchall()]
+            # who decided in chat: the first handled chat decision of the matching kind (a recovered
+            # one may read NOT_PENDING because its own earlier attempt had already committed it)
+            deciders: dict[str, str] = {}
+            for r in st.conn.execute(
+                    "SELECT approval_id, user_id, decision FROM nexconn_inbound WHERE state='DONE' AND outcome NOT IN "
+                    "('NOT_AN_APPROVER','UNKNOWN_APPROVAL') ORDER BY received_at, rowid"):
+                deciders.setdefault((r["approval_id"], r["decision"]), r["user_id"])
+        for a in rows:
+            result: dict[str, Any] = {"result": {"REJECTED": "REJECTED", "DENIED_BY_POLICY": "DENIED",
+                                                 "QUOTE_CHANGED": "QUOTE_CHANGED"}.get(a["status"], a["status"])}
+            if a["status"] == "APPROVED" and a["order_id"]:
+                order = st.get("orders", a["order_id"])
+                if order:
+                    result = {"result": self.svc._result(order), "order": order}
+            by = deciders.get((a["id"], "reject" if a["status"] == "REJECTED" else "approve"))
+            text, extra = outcome_text(a["id"], result, "chat" if by else "dashboard", by)
+            self._enqueue(a["id"], "outcome", text, extra)
+        return len(rows)
 
     def session(self, user_id: str | None) -> dict[str, Any]:
         """A Chat SDK session for an approver (the route requires the approver token)."""
@@ -301,13 +335,16 @@ class ChatApprovalChannel:
                                    r["source"]) != "new":
                 continue
             try:
-                self._decide(r["message_id"], r["user_id"], Decision(r["approval_id"], r["decision"]))
+                self._decide(r["message_id"], r["user_id"], Decision(r["approval_id"], r["decision"]),
+                             recovering=True)
                 done += 1
             except Exception:
                 log.exception("recovering decision %s failed", r["message_id"])
         return done
 
-    def _decide(self, mid: str, uid: str, decision) -> dict[str, Any]:
+    def _decide(self, mid: str, uid: str, decision, recovering: bool = False) -> dict[str, Any]:
+        """recovering: re-running a claim whose handler died; the decision may already have been
+        committed by that handler, so "already decided" is not news worth posting."""
         if uid not in self.cfg.approver_ids:
             self._record(mid, "NOT_AN_APPROVER")
             self.notice(decision.approval_id, f"{uid} is not an approver; nothing changed")
@@ -322,14 +359,16 @@ class ChatApprovalChannel:
             return {"result": "UNKNOWN_APPROVAL"}
         except ValueError as e:              # already decided / expired / claimed elsewhere
             self._record(mid, "NOT_PENDING")
-            self.notice(decision.approval_id, f"{e}; nothing changed")
+            if not recovering:
+                self.notice(decision.approval_id, f"{e}; nothing changed")
             return {"result": "NOT_PENDING", "detail": str(e)}
         finally:
             _DECIDER.reset(token)
         res = str(out.get("result"))
         self._record(mid, res)
         if out.get("replayed"):
-            self.notice(decision.approval_id, "was already approved; nothing changed")
+            if not recovering:
+                self.notice(decision.approval_id, "was already approved; nothing changed")
         return {"result": res, "approval_id": decision.approval_id, "decision": decision.decision,
                 "decided_by": uid, **({"order_id": out["order"]["id"]} if isinstance(out.get("order"), dict) else {})}
 
