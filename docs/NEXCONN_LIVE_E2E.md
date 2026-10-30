@@ -24,9 +24,11 @@ No secret values are recorded here.
 Observations
 - Nexconn also delivers a `message:send` webhook for messages the server sends through the Platform
   API (the agent's own cards and outcomes); they are verified and ignored as "own message".
-- `journalctl -u guardrail` showed no errors or warnings during the run; every webhook answered 200.
+- `journalctl -u guardrail` showed no errors or warnings during the run; every authentic Nexconn
+  delivery was answered 200 (the forged requests of scenario 7 got 401, as intended).
 
 Fixed after the run (chat page only): the connection chip showed raw SDK status numbers
 ("Connection: 1") and its `/connected/` test would have shown "disconnected" as connected; it now
 shows the SDK enum name and is green only for exactly "connected". Decided cards now drop their
-Approve / Reject buttons instead of keeping them greyed out.
+Approve / Reject buttons instead of keeping them greyed out, on every copy of the card (an
+at-least-once re-send can post the same request card twice; each copy is closed by the outcome).

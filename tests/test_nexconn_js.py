@@ -98,8 +98,11 @@ def test_chat_transports():
 
 def test_chat_page_connection_chip_and_closed_cards():
     """chat.js: the chip is green only for exactly "connected" (a "disconnected" status used to match
-    /connected/), and a decided card loses its Approve / Reject buttons instead of keeping them greyed."""
+    /connected/), and a decided card loses its Approve / Reject buttons instead of keeping them greyed,
+    on every rendered copy of it (an at-least-once re-send can post the same request card twice)."""
     js = (ROOT / "app" / "static" / "chat.js").read_text()
     assert 'const ok = s === "connected";' in js
     assert "/connected|^0$/" not in js
     assert 'card.querySelector(".card-actions")?.remove();' in js
+    assert "state.cards.set(aid, [...(state.cards.get(aid) || []), body]);" in js
+    assert "for (const card of cards)" in js

@@ -33,13 +33,16 @@ function who(uid) {
 }
 
 function resolveCard(aid) {
-  const card = state.cards.get(aid), out = state.outcomes.get(aid);
-  if (!card || !out) return;
-  card.querySelector(".card-actions")?.remove();   // decided: no buttons left to press
-  const tag = card.querySelector(".card-state");
+  // every rendered copy of the card (an at-least-once re-send can post the same request twice)
+  const cards = state.cards.get(aid), out = state.outcomes.get(aid);
+  if (!cards || !out) return;
   const bad = !["AWAITING_PAYER_APPROVAL", "ORDER_PLACED", "PAYMENT_UNCONFIRMED"].includes(out.result);
-  tag.textContent = bad ? "Closed: not bought" : "Closed: approved";
-  tag.className = `card-state ${bad ? "tone-bad" : "tone-ok"}`;
+  for (const card of cards) {
+    card.querySelector(".card-actions")?.remove();   // decided: no buttons left to press
+    const tag = card.querySelector(".card-state");
+    tag.textContent = bad ? "Closed: not bought" : "Closed: approved";
+    tag.className = `card-state ${bad ? "tone-bad" : "tone-ok"}`;
+  }
 }
 
 async function decide(aid, decision, buttons) {
@@ -74,7 +77,7 @@ function renderMessage(m) {
          el("span", {class: "card-state tone-warn"}, "Waiting for a decision")),
       el("pre", {class: "msg-text"}, m.text),
       el("div", {class: "card-actions"}, approve, reject));
-    state.cards.set(aid, body);
+    state.cards.set(aid, [...(state.cards.get(aid) || []), body]);
   } else {
     body = el("pre", {class: "msg-text"}, m.text);
   }
