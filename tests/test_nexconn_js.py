@@ -62,7 +62,10 @@ await live.start((l) => lg.push(...l), (s) => statuses.push(s));
 for (const st of [1, 0, 2, 6, 42]) statusHandler.onConnectionStatusChanged({status: st, code: 0});
 handler.onMessageReceived({messages: [
   {messageId: 'N1', senderUserId: 'grbagent', sentTime: 3, messageType: 'RC:TxtMsg', content: {text: 'card'}, channelIdentifier: {channelId: 'grbapprovals'}},
-  {messageId: 'N2', senderUserId: 'x', sentTime: 3, messageType: 'RC:TxtMsg', content: {text: 'elsewhere'}, channelIdentifier: {channelId: 'other'}}]});
+  {messageId: 'N2', senderUserId: 'x', sentTime: 3, messageType: 'RC:TxtMsg', content: {text: 'elsewhere'}, channelIdentifier: {channelId: 'other'}},
+  // crafted by a group member: object-typed fields must not throw (String({toString: null}) does)
+  {messageId: 'N3', senderUserId: {toString: null}, sentTime: {toString: null}, messageType: 'RC:TxtMsg',
+   content: {text: {toString: null}, extra: '{"grb":{"toString":null}}'}, channelIdentifier: {channelId: 'grbapprovals'}}]});
 const ls = await live.send('reject APR-1A2B3C4D', {grb: 'decision', approval_id: 'APR-1A2B3C4D', decision: 'reject'});
 const plain = await live.send('hello', null);
 out.live = {log, lg, ls, plain, statuses};
@@ -89,7 +92,8 @@ def test_chat_transports():
     lv = out["live"]
     assert lv["log"][0] == ["init", {"appKey": "KEY", "areaCode": 3}]
     assert lv["log"][1] == ["connect", {"token": "tok"}]
-    assert [x["id"] for x in lv["lg"]] == ["H1", "H2", "N1"]           # history oldest-first, then live; no image, no other room
+    assert [x["id"] for x in lv["lg"]] == ["H1", "H2", "N1", "N3"]     # history oldest-first, then live; no image, no other room
+    assert lv["lg"][3] == {"id": "N3", "from": "", "time": 0, "text": "", "extra": {}}  # crafted fields dropped, no throw
     assert lv["lg"][0]["extra"] == {"x": 1}
     assert lv["ls"] == {"messageId": "SDK-9"}
     sends = [x[1] for x in lv["log"] if x[0] == "send"]

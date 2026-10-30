@@ -22,6 +22,11 @@ export function parseExtra(raw) {
   return out;
 }
 
+// Message fields come from any group member; anything that is not a plain string / finite number is dropped
+// (an object such as {"toString": null} would throw on String() and stop the whole history from loading).
+export const textOf = (v) => (typeof v === "string" ? v : Number.isFinite(v) ? String(v) : "");
+const timeOf = (v) => (Number.isFinite(v) ? v : 0);
+
 // The SDK reports connection changes as numeric ConnectionStatus codes (0 = CONNECTED, 1 = CONNECTING,
 // 2 = DISCONNECTED, 6 = KICKED_OFFLINE_BY_OTHER_CLIENT, ...). The page shows a word, never a bare number:
 // "connected", or the enum's name in lower case ("connecting", "kicked offline by other client").
@@ -42,8 +47,8 @@ export function createMockTransport(session, {fetchImpl = fetch, intervalMs = 15
   const norm = (m) => {
     let body = {};
     try { body = JSON.parse(m.content); } catch { /* not JSON: shown empty */ }
-    return {id: m.messageId, from: m.userId, text: String(body.content ?? ""), extra: parseExtra(body.extra),
-            time: m.time};
+    return {id: textOf(m.messageId), from: textOf(m.userId), text: textOf(body?.content), extra: parseExtra(body?.extra),
+            time: timeOf(m.time)};
   };
   async function poll(onMessages) {
     const r = await fetchImpl(`/nexconn/mock/messages?after=${next}`, {headers});
@@ -80,8 +85,8 @@ export async function createNexconnTransport(session, sdkLoader = () => import("
          BaseChannel, AreaCode, ConnectionStatus} = sdk;
   const channel = new GroupChannel(session.group_id);
   const norm = (m) => ({
-    id: m.messageId, from: m.senderUserId, time: m.sentTime,
-    text: String(m.content?.text ?? m.content?.content ?? ""), extra: parseExtra(m.content?.extra),
+    id: textOf(m.messageId), from: textOf(m.senderUserId), time: timeOf(m.sentTime),
+    text: textOf(m.content?.text ?? m.content?.content), extra: parseExtra(m.content?.extra),
   });
   const mine = (m) => m.channelIdentifier?.channelId === session.group_id && m.messageType === "RC:TxtMsg";
   return {
