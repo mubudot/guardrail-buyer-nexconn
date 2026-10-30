@@ -41,9 +41,11 @@ class GroupChannel { constructor(id) { this.identifier = {channelId: id, channel
 class SendTextMessageParams { constructor(c) { this.content = c; } }
 class MessageHandler { constructor(h) { Object.assign(this, h); } }
 class ConnectionStatusHandler { constructor(h) { Object.assign(this, h); } }
-let handler = null;
-const sdk = {GroupChannel, SendTextMessageParams, MessageHandler, ConnectionStatusHandler, AreaCode: {SG: 2, NA: 3},
-  NCEngine: {initialize: (o) => log.push(['init', o]), addConnectionStatusHandler() {},
+let handler = null, statusHandler = null;
+const CS = {CONNECTED: 0, CONNECTING: 1, DISCONNECTED: 2, KICKED_OFFLINE_BY_OTHER_CLIENT: 6,
+            0: 'CONNECTED', 1: 'CONNECTING', 2: 'DISCONNECTED', 6: 'KICKED_OFFLINE_BY_OTHER_CLIENT'};
+const sdk = {ConnectionStatus: CS, GroupChannel, SendTextMessageParams, MessageHandler, ConnectionStatusHandler, AreaCode: {SG: 2, NA: 3},
+  NCEngine: {initialize: (o) => log.push(['init', o]), addConnectionStatusHandler: (id, h) => { statusHandler = h; },
     addMessageHandler: (id, h) => { handler = h; }, connect: async (o) => { log.push(['connect', o]); return {isOk: true, code: 0}; },
     disconnect() {}},
   BaseChannel: {createMessagesQuery: (p) => { log.push(['query', p.pageSize, p.isAscending]); return {loadNextPage: async () => ({isOk: true, data: {data: [
@@ -51,14 +53,16 @@ const sdk = {GroupChannel, SendTextMessageParams, MessageHandler, ConnectionStat
     {messageId: 'H1', senderUserId: 'alice', sentTime: 1, messageType: 'RC:TxtMsg', content: {text: 'older', extra: '{"x":1}'}},
     {messageId: 'IMG', senderUserId: 'alice', sentTime: 1, messageType: 'RC:ImgMsg', content: {}}]}})}; }}};
 const live = await mod.createNexconnTransport({group_id: 'grbapprovals', app_key: 'KEY', area: 'NA', token: 'tok'}, async () => sdk);
-const lg = [];
-await live.start((l) => lg.push(...l));
+const lg = [], statuses = [];
+await live.start((l) => lg.push(...l), (s) => statuses.push(s));
+for (const st of [1, 0, 2, 6, 42]) statusHandler.onConnectionStatusChanged({status: st, code: 0});
 handler.onMessageReceived({messages: [
   {messageId: 'N1', senderUserId: 'grbagent', sentTime: 3, messageType: 'RC:TxtMsg', content: {text: 'card'}, channelIdentifier: {channelId: 'grbapprovals'}},
   {messageId: 'N2', senderUserId: 'x', sentTime: 3, messageType: 'RC:TxtMsg', content: {text: 'elsewhere'}, channelIdentifier: {channelId: 'other'}}]});
 const ls = await live.send('reject APR-1A2B3C4D', {grb: 'decision', approval_id: 'APR-1A2B3C4D', decision: 'reject'});
 const plain = await live.send('hello', null);
-out.live = {log, lg, ls, plain};
+out.live = {log, lg, ls, plain, statuses};
+out.labels = [mod.statusLabel(CS, 0), mod.statusLabel(CS, '0'), mod.statusLabel(null, 2), mod.statusLabel(CS, 'x')];
 console.log(JSON.stringify(out));
 """
 
@@ -86,3 +90,16 @@ def test_chat_transports():
     sends = [x[1] for x in lv["log"] if x[0] == "send"]
     assert sends[0]["text"] == "reject APR-1A2B3C4D" and json.loads(sends[0]["extra"])["decision"] == "reject"
     assert sends[1] == {"text": "hello"}
+    # SDK status codes become words (the page never shows "Connection: 1"); "connected" only for 0
+    assert lv["statuses"] == ["connected", "connecting", "connected", "disconnected",
+                              "kicked offline by other client", "status 42"]
+    assert out["labels"] == ["connected", "connected", "status 2", "status x"]
+
+
+def test_chat_page_connection_chip_and_closed_cards():
+    """chat.js: the chip is green only for exactly "connected" (a "disconnected" status used to match
+    /connected/), and a decided card loses its Approve / Reject buttons instead of keeping them greyed."""
+    js = (ROOT / "app" / "static" / "chat.js").read_text()
+    assert 'const ok = s === "connected";' in js
+    assert "/connected|^0$/" not in js
+    assert 'card.querySelector(".card-actions")?.remove();' in js

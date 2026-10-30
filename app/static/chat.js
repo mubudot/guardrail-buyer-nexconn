@@ -21,7 +21,7 @@ const COMMAND = /^\s*\/?(approve|reject)\s+(APR-[0-9A-F]{8})\s*[.!]?\s*$/i;  // 
 function showError(msg) { const e = $("join-error"); e.textContent = msg; e.hidden = !msg; }
 function setConn(s) {
   const c = $("conn"); c.hidden = false;
-  const ok = /connected|^0$/i.test(s);
+  const ok = s === "connected";   // exact: "disconnected" must not read as connected
   c.textContent = ok ? "Connected" : `Connection: ${s}`;
   c.className = `chip ${ok ? "env-sandbox" : "warn"}`;
 }
@@ -35,7 +35,7 @@ function who(uid) {
 function resolveCard(aid) {
   const card = state.cards.get(aid), out = state.outcomes.get(aid);
   if (!card || !out) return;
-  card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  card.querySelector(".card-actions")?.remove();   // decided: no buttons left to press
   const tag = card.querySelector(".card-state");
   const bad = !["AWAITING_PAYER_APPROVAL", "ORDER_PLACED", "PAYMENT_UNCONFIRMED"].includes(out.result);
   tag.textContent = bad ? "Closed: not bought" : "Closed: approved";

@@ -14,6 +14,16 @@ export function parseExtra(raw) {
   catch { return null; }
 }
 
+// The SDK reports connection changes as numeric ConnectionStatus codes (0 = CONNECTED, 1 = CONNECTING,
+// 2 = DISCONNECTED, 6 = KICKED_OFFLINE_BY_OTHER_CLIENT, ...). The page shows a word, never a bare number:
+// "connected", or the enum's name in lower case ("connecting", "kicked offline by other client").
+export function statusLabel(statusEnum, status) {
+  if (status === 0 || status === "0") return "connected";
+  const name = statusEnum && typeof status === "number" ? statusEnum[status] : null;
+  if (typeof name === "string" && name) return name === "CONNECTED" ? "connected" : name.toLowerCase().replace(/_/g, " ");
+  return `status ${String(status)}`;
+}
+
 export async function createTransport(session) {
   return session.mode === "live" ? createNexconnTransport(session) : createMockTransport(session);
 }
@@ -59,7 +69,7 @@ export function createMockTransport(session, {fetchImpl = fetch, intervalMs = 15
 export async function createNexconnTransport(session, sdkLoader = () => import("@nexconn/chat")) {
   const sdk = await sdkLoader();
   const {NCEngine, GroupChannel, SendTextMessageParams, MessageHandler, ConnectionStatusHandler,
-         BaseChannel, AreaCode} = sdk;
+         BaseChannel, AreaCode, ConnectionStatus} = sdk;
   const channel = new GroupChannel(session.group_id);
   const norm = (m) => ({
     id: m.messageId, from: m.senderUserId, time: m.sentTime,
@@ -71,7 +81,7 @@ export async function createNexconnTransport(session, sdkLoader = () => import("
     async start(onMessages, onStatus = () => {}) {
       NCEngine.initialize({appKey: session.app_key, areaCode: AreaCode[session.area] ?? AreaCode.SG});
       NCEngine.addConnectionStatusHandler("grb-approvals", new ConnectionStatusHandler({
-        onConnectionStatusChanged({status}) { onStatus(String(status)); },
+        onConnectionStatusChanged({status}) { onStatus(statusLabel(ConnectionStatus, status)); },
       }));
       NCEngine.addMessageHandler("grb-approvals", new MessageHandler({
         onMessageReceived({messages}) { const ours = messages.filter(mine); if (ours.length) onMessages(ours.map(norm)); },
