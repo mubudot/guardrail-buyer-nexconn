@@ -18,6 +18,10 @@ HARNESS = r"""
 const mod = await import(process.argv[1]);
 const out = {};
 out.extra = [mod.parseExtra('{"a":1}'), mod.parseExtra('[1]'), mod.parseExtra('{bad'), mod.parseExtra(null)];
+// crafted metadata from any group member: non-primitive fields are dropped, prototype keys ignored
+const crafted = mod.parseExtra('{"grb":{"toString":null},"approval_id":["APR-1A2B3C4D"],"ok":"yes","n":2,"b":true,"z":null,"__proto__":{"polluted":1}}');
+out.crafted = {value: crafted, proto: Object.getPrototypeOf(crafted) === Object.prototype, polluted: crafted.polluted === undefined,
+               render: `k-${crafted.grb ?? ""}`};
 
 // ---- mock transport
 const calls = [];
@@ -74,6 +78,7 @@ def test_chat_transports():
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout)
     assert out["extra"] == [{"a": 1}, None, None, None]
+    assert out["crafted"] == {"value": {"ok": "yes", "n": 2, "b": True}, "proto": True, "polluted": True, "render": "k-"}
     m = out["mock"]
     assert m["got"] == [{"id": "M1", "from": "grbagent", "text": "card", "time": 5,
                          "extra": {"grb": "approval_request", "approval_id": "APR-1A2B3C4D"}}]

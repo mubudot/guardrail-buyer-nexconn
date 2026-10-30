@@ -8,10 +8,18 @@
 //       issued for this approver; messages go to and come from the Nexconn group channel.
 // mock: the server's in-memory room (NEXCONN_MODE=mock), polled every 1.5 s.
 
+// Any group member can attach `extra`, so only flat primitive fields survive: an object or null where the
+// page expects a string (e.g. {"grb": {"toString": null}}) would throw while rendering history.
 export function parseExtra(raw) {
   if (!raw || typeof raw !== "string" || raw.length > 2048) return null;
-  try { const v = JSON.parse(raw); return v && typeof v === "object" && !Array.isArray(v) ? v : null; }
-  catch { return null; }
+  let v;
+  try { v = JSON.parse(raw); } catch { return null; }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (k !== "__proto__" && ["string", "number", "boolean"].includes(typeof val)) out[k] = val;
+  }
+  return out;
 }
 
 // The SDK reports connection changes as numeric ConnectionStatus codes (0 = CONNECTED, 1 = CONNECTING,

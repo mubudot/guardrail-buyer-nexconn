@@ -17,6 +17,7 @@ function el(tag, attrs = {}, ...kids) {
 const state = {cfg: null, session: null, transport: null, seen: new Set(), outcomes: new Map(), cards: new Map()};
 const APR = /^APR-[0-9A-F]{8}$/;
 const COMMAND = /^\s*\/?(approve|reject)\s+(APR-[0-9A-F]{8})\s*[.!]?\s*$/i;  // same rule as the server
+const KINDS = new Set(["approval_request", "outcome", "notice", "decision"]);  // known `extra.grb` kinds
 
 function showError(msg) { const e = $("join-error"); e.textContent = msg; e.hidden = !msg; }
 function setConn(s) {
@@ -84,7 +85,8 @@ function renderMessage(m) {
   if (bot && x.grb === "outcome" && APR.test(x.approval_id || "")) {
     state.outcomes.set(x.approval_id, x);
   }
-  const li = el("li", {class: `msg ${mine ? "mine" : ""} ${bot ? "bot" : ""} ${x.grb ? `k-${x.grb}` : ""}`}, meta, body);
+  const kind = KINDS.has(x.grb) ? `k-${x.grb}` : "";
+  const li = el("li", {class: `msg ${mine ? "mine" : ""} ${bot ? "bot" : ""} ${kind}`}, meta, body);
   $("messages").append(li);
   if (x.grb === "outcome") resolveCard(x.approval_id);
   if (x.grb === "approval_request") resolveCard(x.approval_id);
