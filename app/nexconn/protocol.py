@@ -120,7 +120,8 @@ def outcome_text(approval_id: str, result: dict[str, Any], via: str, by: str | N
     res = str(result.get("result") or "")
     what = _OUTCOME_TEXT.get(res, res.lower().replace("_", " ") or "decided")
     who = f" by {by}" if by else ""
-    where = {"chat": "in chat", "dashboard": "on the dashboard"}.get(via, via)
+    where = {"chat": "in chat", "dashboard": "on the dashboard",
+             "recovered": "earlier; posted after a restart"}.get(via, via)
     order = result.get("order") or {}
     order_id = order.get("id") if isinstance(order, dict) else None
     text = f"{approval_id}: {what} (decided{who} {where})"

@@ -295,5 +295,37 @@ def test_outcome_is_posted_even_if_the_process_died_before_the_listener(chat, se
     last = room(chat)[-1]
     assert last["extra"]["grb"] == "outcome" and last["extra"]["approval_id"] == aid
     assert last["extra"]["result"] == ("ORDER_PLACED" if decision == "approve" else "REJECTED")
-    assert "decided by alice in chat" in last["text"]
+    # the dying handler never recorded that it made the decision: no guessed attribution
+    assert last["extra"]["via"] == "recovered" and "alice" not in last["text"]
     assert chat.recover()["outcomes"] == 0                          # posted once
+
+
+def test_recovered_outcome_credits_a_recorded_chat_decider(chat, service, monkeypatch):
+    aid = ask(service)
+    monkeypatch.setattr(service, "_approval_listeners", [])
+    say(chat, "bob", f"approve {aid}")                              # recorded ORDER_PLACED, listener "lost"
+    monkeypatch.undo()
+    import time as _t
+    chat._clock = lambda: _t.time() + 1000
+    assert chat.recover()["outcomes"] == 1
+    assert "decided by bob in chat" in room(chat)[-1]["text"]
+
+
+def test_refused_chat_decision_is_never_credited(chat, service, monkeypatch):
+    aid = ask(service)
+    monkeypatch.setattr(service, "_approval_listeners", [])
+    service.reject(aid)                                             # dashboard, listener "lost"
+    monkeypatch.undo()
+    say(chat, "alice", f"reject {aid}")                             # refused: NOT_PENDING
+    import time as _t
+    chat._clock = lambda: _t.time() + 1000
+    chat.recover()
+    last = room(chat)[-1]
+    assert last["extra"]["grb"] == "outcome" and "alice" not in last["text"]
+
+
+def test_one_outcome_per_approval_even_when_recovery_races(chat, service):
+    aid = ask(service)
+    service.reject(aid)                                             # listener posts the outcome
+    chat._enqueue(aid, "outcome", "dup", {"grb": "outcome"})        # a racing recovery
+    assert sum(1 for m in room(chat) if (m["extra"] or {}).get("grb") == "outcome") == 1

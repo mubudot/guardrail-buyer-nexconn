@@ -51,6 +51,8 @@ _SCHEMA = (
         status TEXT NOT NULL, message_id TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
         claimed_at REAL, created_at TEXT NOT NULL, sent_at TEXT)""",
     "CREATE INDEX IF NOT EXISTS nexconn_posts_status ON nexconn_posts(status)",
+    # one outcome per approval, whoever (listener or recovery, any process) gets there first
+    "CREATE UNIQUE INDEX IF NOT EXISTS nexconn_posts_one_outcome ON nexconn_posts(approval_id) WHERE kind='outcome'",
     # inbound messages: PROCESSING (claimed) -> DONE; a failed attempt deletes its claim
     """CREATE TABLE IF NOT EXISTS nexconn_inbound (
         message_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, approval_id TEXT, decision TEXT,
@@ -134,12 +136,13 @@ class ChatApprovalChannel:
                 "AND EXISTS (SELECT 1 FROM nexconn_posts p WHERE p.approval_id=a.id AND p.kind='request') "
                 "AND NOT EXISTS (SELECT 1 FROM nexconn_posts p WHERE p.approval_id=a.id AND p.kind='outcome')",
                 (cutoff,)).fetchall()]
-            # who decided in chat: the first handled chat decision of the matching kind (a recovered
-            # one may read NOT_PENDING because its own earlier attempt had already committed it)
+            # who decided in chat: only a chat decision recorded as having made the decision. When
+            # that is unknown (e.g. the handler died before recording it) the post says so instead
+            # of guessing.
             deciders: dict[str, str] = {}
             for r in st.conn.execute(
                     "SELECT approval_id, user_id, decision FROM nexconn_inbound WHERE state='DONE' AND outcome NOT IN "
-                    "('NOT_AN_APPROVER','UNKNOWN_APPROVAL') ORDER BY received_at, rowid"):
+                    "('NOT_AN_APPROVER','UNKNOWN_APPROVAL','NOT_PENDING','ALREADY_APPROVED') ORDER BY received_at, rowid"):
                 deciders.setdefault((r["approval_id"], r["decision"]), r["user_id"])
         for a in rows:
             result: dict[str, Any] = {"result": {"REJECTED": "REJECTED", "DENIED_BY_POLICY": "DENIED",
@@ -149,7 +152,7 @@ class ChatApprovalChannel:
                 if order:
                     result = {"result": self.svc._result(order), "order": order}
             by = deciders.get((a["id"], "reject" if a["status"] == "REJECTED" else "approve"))
-            text, extra = outcome_text(a["id"], result, "chat" if by else "dashboard", by)
+            text, extra = outcome_text(a["id"], result, "chat" if by else "recovered", by)
             self._enqueue(a["id"], "outcome", text, extra)
         return len(rows)
 
@@ -183,8 +186,10 @@ class ChatApprovalChannel:
 
     def _enqueue(self, approval_id: str, kind: str, text: str, extra: dict) -> None:
         with self.svc.store.tx() as c:
-            cur = c.execute("INSERT INTO nexconn_posts (approval_id, kind, text, extra, status, created_at) "
+            cur = c.execute("INSERT OR IGNORE INTO nexconn_posts (approval_id, kind, text, extra, status, created_at) "
                             "VALUES (?,?,?,?, 'QUEUED', ?)", (approval_id, kind, text, json.dumps(extra), _now()))
+            if cur.rowcount != 1:      # an outcome for this approval is already queued or sent
+                return
             post_id = cur.lastrowid
         if self.dispatch == "inline":
             self._send(post_id)
@@ -365,7 +370,9 @@ class ChatApprovalChannel:
         finally:
             _DECIDER.reset(token)
         res = str(out.get("result"))
-        self._record(mid, res)
+        # a replay means someone else's approval (or an earlier attempt) placed the order: record it
+        # as such so this message is never credited with the decision
+        self._record(mid, "ALREADY_APPROVED" if out.get("replayed") else res)
         if out.get("replayed"):
             if not recovering:
                 self.notice(decision.approval_id, "was already approved; nothing changed")
