@@ -427,6 +427,8 @@ function renderMode() {
   const ap = $("approver-mode");
   ap.textContent = txt; ap.title = tip; ap.hidden = false;
   ap.classList.toggle("warn", health.approver_mode !== "token");
+  const chat = $("chat-link");
+  if (chat) chat.hidden = !health.nexconn || health.nexconn.mode === "off";
 }
 tokenInput.addEventListener("input", renderMode);
 

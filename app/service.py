@@ -38,6 +38,7 @@ import re
 import json
 import os
 import secrets
+import logging
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -54,6 +55,8 @@ from .store import (COUNTED_STATUSES, OPEN_STATUSES, RELEASED_STATUSES, RESERVED
                     STUCK_AFTER, Store)
 
 __all__ = ["BuyerService", "Catalog", "Store", "MockLockError", "PolicyConflict"]
+
+log = logging.getLogger("guardrail")
 
 
 class MockLockError(RuntimeError):
@@ -75,7 +78,24 @@ class BuyerService(ReportingMixin, PolicyAdminMixin):
             minutes=int(os.environ.get("PAYPAL_APPROVAL_TTL_MIN", "180")))
         self.base_policy = policy       # from policy.yaml; an owner edit (PUT /policy) overrides it
         self._policy_raw: str | None = None
+        # Approval observers (e.g. the Nexconn chat approval channel). Called after the
+        # transaction commits; an observer can never change or break a purchase.
+        self._approval_listeners: list = []
         self.sync_policy()
+
+    def add_approval_listener(self, fn) -> None:
+        """fn(event, approval_row, result) with event in {"requested", "decided"}."""
+        self._approval_listeners.append(fn)
+
+    def _emit_approval(self, event: str, approval_id: str, result: dict[str, Any]) -> None:
+        if not self._approval_listeners:
+            return
+        row = self.store.get("approvals", approval_id)
+        for fn in list(self._approval_listeners):
+            try:
+                fn(event, row, result)
+            except Exception:  # an observer must never break the purchase flow
+                log.exception("approval listener failed for %s (%s)", approval_id, event)
 
     def _ts(self, dt: datetime | None = None) -> str:
         return (dt or self._clock()).astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds")
@@ -670,9 +690,18 @@ class BuyerService(ReportingMixin, PolicyAdminMixin):
                 "created_at": self._ts(), "decided_at": None, "request_id": request_id})
             self._log_decision("approval_request", p, quantity, req, d, "APPROVAL_REQUESTED", rules, spent,
                                request_id, approval_id=aid)
-        return {"result": "APPROVAL_REQUESTED", "approval_id": aid, **d.to_dict()}
+        out = {"result": "APPROVAL_REQUESTED", "approval_id": aid, **d.to_dict()}
+        self._emit_approval("requested", aid, out)
+        return out
 
     def approve(self, approval_id: str) -> dict[str, Any]:
+        """Human approval (see _approve); observers hear about a first decision, not a replay."""
+        out = self._approve(approval_id)
+        if not out.get("replayed"):
+            self._emit_approval("decided", approval_id, out)
+        return out
+
+    def _approve(self, approval_id: str) -> dict[str, Any]:
         """Human approval. Claims the approval exactly once (PENDING -> EXECUTING) in the
         same transaction that creates its single order and reservation. A repeated call
         returns the existing order. A changed quote (B5) or a deny rule refuses."""
@@ -732,6 +761,11 @@ class BuyerService(ReportingMixin, PolicyAdminMixin):
         return {"result": self._result(order), "order": order}
 
     def reject(self, approval_id: str) -> dict[str, Any]:
+        out = self._reject(approval_id)
+        self._emit_approval("decided", approval_id, out)
+        return out
+
+    def _reject(self, approval_id: str) -> dict[str, Any]:
         with self.store.tx() as c:
             a = self.store.get("approvals", approval_id)
             if a is None:

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Approval chat · GuardRail Buyer</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/chat.css">
+  <!-- The Nexconn Web Chat SDK (@nexconn/chat + @nexconn/engine, pinned) is loaded only in
+       NEXCONN_MODE=live; /nexconn/sdk/*.mjs redirect to the pinned build (NEXCONN_SDK_BASE). -->
+  <script type="importmap">
+    {"imports": {"@nexconn/chat": "/nexconn/sdk/chat.mjs", "@nexconn/engine": "/nexconn/sdk/engine.mjs"}}
+  </script>
+</head>
+<body class="chat-page">
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <path d="M16 2.5 4.5 7v8.2c0 7 4.9 12.6 11.5 14.3 6.6-1.7 11.5-7.3 11.5-14.3V7L16 2.5Z" fill="#0070e0"/>
+      <path d="M16 2.5V29.5c6.6-1.7 11.5-7.3 11.5-14.3V7L16 2.5Z" fill="#009cde"/>
+      <path d="m10.5 16.2 3.8 3.8 7.4-7.6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1>Approval chat</h1>
+      <p class="sub">Approve your AI buyer's purchases where your team already talks</p>
+    </div>
+  </div>
+  <div class="status">
+    <span id="chat-mode" class="chip">Nexconn …</span>
+    <span id="conn" class="chip" hidden></span>
+    <a class="chip link-chip" href="/">Dashboard</a>
+  </div>
+</header>
+
+<main id="main" class="chat-main">
+  <section id="join" class="card join">
+    <h2>Join the approval room</h2>
+    <p class="hint" id="join-hint">Sign in as an approver. The server issues a Nexconn access token for you;
+      your approver token never leaves this page except to this server.</p>
+    <form id="join-form">
+      <label>Approver token <input id="token" type="password" autocomplete="off" placeholder="APPROVER_TOKEN"></label>
+      <label>Join as <select id="as-user"></select></label>
+      <button class="btn primary" type="submit" id="join-btn">Join room</button>
+    </form>
+    <p id="join-error" class="error" role="alert" hidden></p>
+  </section>
+
+  <section id="room" class="card room" hidden aria-label="Approval room">
+    <div class="room-head">
+      <h2><span id="room-name">Approval room</span></h2>
+      <span class="hint" id="room-who"></span>
+    </div>
+    <ol id="messages" class="messages" aria-live="polite"></ol>
+    <form id="composer" class="composer">
+      <label class="sr-only" for="text">Message</label>
+      <input id="text" type="text" maxlength="500" autocomplete="off"
+             placeholder="Type “approve APR-…” or “reject APR-…”, or chat with your team">
+      <button class="btn primary" type="submit">Send</button>
+    </form>
+  </section>
+
+  <section id="off" class="card" hidden>
+    <h2>The chat approval channel is off</h2>
+    <p>Start the server with <code>NEXCONN_MODE=mock</code> (offline, no account) or
+      <code>NEXCONN_MODE=live</code> with your Nexconn App Key and App Secret. See the README.</p>
+  </section>
+</main>
+
+<script type="module" src="/static/chat.js"></script>
+</body>
+</html>

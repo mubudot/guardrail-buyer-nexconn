@@ -29,6 +29,8 @@ from .guardrails import Policy  # noqa: E402
 from .paypal_client import MockPayPal, PayPalError, make_client  # noqa: E402
 from .service import BuyerService, Catalog, MockLockError, PolicyConflict  # noqa: E402
 from .tool_gateway import TOOL_NAMES, TOOL_SPECS, GuardedTools  # noqa: E402
+from .nexconn import NexconnConfig, NexconnConfigError, build_channel, relay_enabled  # noqa: E402
+from .nexconn.routes import build_router as build_nexconn_router  # noqa: E402
 
 log = logging.getLogger("guardrail")
 STATIC = ROOT / "app" / "static"
@@ -101,7 +103,10 @@ class RateLimiter:
 def create_app(service: BuyerService | None = None, agent: PurchasingAgent | None = None,
                approver_token: str | None = None, demo_mode: bool | None = None,
                agent_rate_limit: tuple[int, float] | None | str = "env",
-               tools_rate_limit: tuple[int, float] | None | str = "env") -> FastAPI:
+               tools_rate_limit: tuple[int, float] | None | str = "env",
+               nexconn: object = "env") -> FastAPI:
+    """`nexconn`: "env" builds the chat approval channel from NEXCONN_* (off by default);
+    tests pass a ready ChatApprovalChannel, or None for no channel."""
     app = FastAPI(title="GuardRail Buyer", version="0.4.0",
                   description="AI purchasing agent with PayPal spend guardrails (Sandbox)")
     # validate configuration before touching the database (fail fast at startup)
@@ -110,6 +115,10 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     tools_limit = parse_rate_limit(os.environ.get("TOOLS_RATE_LIMIT", "120/60"), "TOOLS_RATE_LIMIT") \
         if tools_rate_limit == "env" else tools_rate_limit
     tools_limiter = RateLimiter(*tools_limit) if tools_limit else None
+    try:
+        nexconn_cfg = NexconnConfig.from_env() if nexconn == "env" else None
+    except NexconnConfigError as e:
+        raise ConfigError(str(e)) from None
     svc = service or build_service()
     app.state.service = svc
     # Mock mode is single-process (N3): take the exclusive DB lock first (fails fast if
@@ -171,6 +180,16 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         if not hmac.compare_digest((x_owner_token or "").encode(), owner_token.encode()):
             raise HTTPException(401, "policy owner token required (X-Owner-Token header)")
 
+    # ---- Nexconn chat approval channel (off unless NEXCONN_MODE is set) ----
+    chat = build_channel(svc, nexconn_cfg) if nexconn == "env" else nexconn
+    app.state.nexconn = chat
+    if chat is not None:
+        app.include_router(build_nexconn_router(chat, require_approver, STATIC, relay_enabled()))
+        if chat.cfg.mode == "live":   # register users + group without delaying startup
+            threading.Thread(target=chat.bootstrap, name="nexconn-bootstrap", daemon=True).start()
+        else:
+            chat.bootstrap()
+
     # ---- dashboard -----------------------------------------------------
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
@@ -186,7 +205,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                 "approver_auth": bool(token), "approver_mode": approver_mode, "policy_owner_mode": owner_mode,
                 "agent_rate_limit": f"{limiter.limit}/{limiter.per:g}s" if limiter else None,
                 "tools_rate_limit": f"{tools_limiter.limit}/{tools_limiter.per:g}s" if tools_limiter else None,
-                "instance": os.environ.get("GRB_INSTANCE")}
+                "instance": os.environ.get("GRB_INSTANCE"),
+                "nexconn": ({**chat.cfg.public(), "ready": chat.ready} if chat is not None else {"mode": "off"})}
 
     @app.get("/policy")
     def get_policy():

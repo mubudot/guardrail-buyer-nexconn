@@ -1,0 +1,182 @@
+"""Server-side Nexconn clients: the real Platform Chat API and an in-memory mock.
+
+Both expose the same three calls the approval channel needs:
+
+    issue_token(user_id, name) -> access token for the Web Chat SDK
+    ensure_group(group_id, name, owner, members)
+    send_group_text(from_user, group_id, text, extra) -> message id
+
+Every live request is signed as documented at
+docs.nexconn.ai/platform-chat-api/prepare-to-use-api/auth:
+    Signature = sha1(AppSecret + Nonce + Timestamp)   (Timestamp in milliseconds)
+and goes to the data center's primary host, then its backup host on a timeout or an
+unexpected HTTP status (docs: base-url, "Domain failover best practices").
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import threading
+import time
+import uuid
+from typing import Any, Callable
+
+import httpx
+
+from .config import NexconnConfig
+
+GROUP_EXISTS = 25409       # "The group channel ID already exists."
+ALREADY_MEMBER = 25412     # "The user is already a member of the group channel."
+
+
+class NexconnError(RuntimeError):
+    def __init__(self, message: str, code: int | None = None, status: int | None = None):
+        super().__init__(message)
+        self.code, self.status = code, status
+
+
+def sign(app_secret: str, nonce: str, timestamp: str) -> str:
+    return hashlib.sha1(f"{app_secret}{nonce}{timestamp}".encode()).hexdigest()
+
+
+def text_content(text: str, extra: dict | None = None) -> str:
+    """RC:TxtMsg content as the server API wants it: a JSON object serialized to a string."""
+    body: dict[str, Any] = {"content": text}
+    if extra is not None:
+        body["extra"] = json.dumps(extra, separators=(",", ":"))
+    return json.dumps(body, ensure_ascii=False)
+
+
+class NexconnClient:
+    """Real Platform Chat API (server side only: it holds the App Secret)."""
+
+    name = "nexconn-live"
+
+    def __init__(self, cfg: NexconnConfig, http: httpx.Client | None = None,
+                 clock: Callable[[], float] = time.time):
+        self.cfg = cfg
+        self.http = http or httpx.Client(timeout=5.0)
+        self.clock = clock
+        self._host_idx = 0
+        self._lock = threading.Lock()
+
+    def headers(self) -> dict[str, str]:
+        nonce = secrets.token_hex(8)                     # 16 chars (docs: at most 18)
+        ts = str(int(self.clock() * 1000))
+        return {"App-Key": self.cfg.app_key, "Nonce": nonce, "Timestamp": ts,
+                "Signature": sign(self.cfg.app_secret, nonce, ts),
+                "X-Request-ID": uuid.uuid4().hex, "Content-Type": "application/json"}
+
+    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        hosts = self.cfg.api_hosts
+        with self._lock:
+            start = self._host_idx
+        last: Exception | None = None
+        for i in range(len(hosts)):
+            idx = (start + i) % len(hosts)
+            try:
+                r = self.http.post(f"https://{hosts[idx]}{path}", json=body, headers=self.headers())
+            except httpx.TransportError as e:            # timeout / connection: try the backup host
+                last = NexconnError(f"{path}: {type(e).__name__} on {hosts[idx]}")
+                continue
+            if r.status_code >= 500 or r.status_code in (404, 405):
+                last = NexconnError(f"{path}: HTTP {r.status_code} on {hosts[idx]}", status=r.status_code)
+                continue
+            with self._lock:
+                self._host_idx = idx                      # remember the host that answered
+            try:
+                data = r.json()
+            except ValueError:
+                raise NexconnError(f"{path}: HTTP {r.status_code}, body is not JSON", status=r.status_code)
+            if not isinstance(data, dict):
+                raise NexconnError(f"{path}: unexpected response shape", status=r.status_code)
+            code = data.get("code")
+            if r.status_code != 200 or code not in (0, 200):
+                raise NexconnError(f"{path}: HTTP {r.status_code}, code {code}: "
+                                   f"{str(data.get('msg') or data.get('message') or '')[:200]}",
+                                   code=code if isinstance(code, int) else None, status=r.status_code)
+            return data
+        raise last or NexconnError(f"{path}: no API host answered")
+
+    def issue_token(self, user_id: str, name: str) -> str:
+        data = self._post("/v4/auth/access-token/issue", {"userId": user_id, "name": name[:64]})
+        result = data.get("result") or {}
+        token = result.get("accessToken") or data.get("token")
+        if not isinstance(token, str) or not token:
+            raise NexconnError("access-token/issue: response has no accessToken")
+        return token
+
+    def ensure_group(self, group_id: str, name: str, owner: str, members: list[str]) -> None:
+        try:
+            self._post("/v4/group-channel/create", {"channelId": group_id, "name": name, "owner": owner,
+                                                    "userIds": [m for m in members if m != owner][:30]})
+            return
+        except NexconnError as e:
+            if e.code != GROUP_EXISTS:
+                raise
+        try:                                              # group already there: make sure everyone is in
+            self._post("/v4/group-channel/join", {"channelId": group_id, "userIds": members[:100]})
+        except NexconnError as e:
+            if e.code != ALREADY_MEMBER:
+                raise
+
+    def send_group_text(self, from_user: str, group_id: str, text: str, extra: dict | None = None) -> str:
+        data = self._post("/v4/group-channel/message/send", {
+            "fromUserId": from_user, "toChannelIds": [group_id], "messageType": "RC:TxtMsg",
+            "content": text_content(text, extra), "shouldPersist": 1, "isEchoToSender": 0})
+        ids = (data.get("result") or {}).get("messageIds") or []
+        for m in ids:
+            if isinstance(m, dict) and m.get("channelId") == group_id and m.get("messageId"):
+                return str(m["messageId"])
+        return str(ids[0].get("messageId")) if ids and isinstance(ids[0], dict) else ""
+
+
+class MockNexconn:
+    """In-memory stand-in with the same calls, plus the room's message log so the offline
+    /chat page (and the tests) can read it. Not a Nexconn emulator: it only keeps what the
+    approval flow needs (one group, text messages with `extra`)."""
+
+    name = "nexconn-mock"
+
+    def __init__(self, clock: Callable[[], float] = time.time):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.groups: dict[str, dict[str, Any]] = {}
+        self.messages: list[dict[str, Any]] = []
+        self.tokens: dict[str, str] = {}
+        self.fail_next_send = 0          # tests: make the next N sends fail
+
+    def issue_token(self, user_id: str, name: str) -> str:
+        with self.lock:
+            tok = f"mock-{secrets.token_urlsafe(16)}"
+            self.tokens[tok] = user_id
+            return tok
+
+    def user_for_token(self, token: str) -> str | None:
+        with self.lock:
+            return self.tokens.get(token)
+
+    def ensure_group(self, group_id: str, name: str, owner: str, members: list[str]) -> None:
+        with self.lock:
+            g = self.groups.setdefault(group_id, {"name": name, "owner": owner, "members": set()})
+            g["members"].update(members)
+            g["members"].add(owner)
+
+    def send_group_text(self, from_user: str, group_id: str, text: str, extra: dict | None = None) -> str:
+        with self.lock:
+            if self.fail_next_send > 0:
+                self.fail_next_send -= 1
+                raise NexconnError("mock: send failed (test)")
+            if group_id not in self.groups:
+                raise NexconnError("mock: group does not exist", code=25410)
+            mid = f"MOCK-{uuid.uuid4().hex[:12].upper()}"
+            self.messages.append({
+                "messageId": mid, "userId": from_user, "channelId": group_id, "channelType": 3,
+                "messageType": "RC:TxtMsg", "content": text_content(text, extra),
+                "time": int(self.clock() * 1000), "os": "Server"})
+            return mid
+
+    def history(self, group_id: str, after: int = 0) -> list[dict[str, Any]]:
+        with self.lock:
+            return [dict(m) for m in self.messages if m["channelId"] == group_id][after:]

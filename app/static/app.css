@@ -53,6 +53,7 @@ kbd { font: 11px var(--mono); background: #fff; border: 1px solid var(--line); b
 .chip.offline::before { background: #c78a00; }
 .chip.warn { background: #fde8e6; color: #8f2318; border-color: #e7b7b1; }
 .chip.warn::before { background: var(--bad); }
+.link-chip { text-decoration: none; color: inherit; }
 .token { font-size: 12px; color: #bcd0f5; display: flex; gap: 8px; align-items: center; white-space: nowrap; }
 .token input { width: 150px; padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .35);
   background: rgba(255, 255, 255, .1); color: #fff; font: inherit; }
