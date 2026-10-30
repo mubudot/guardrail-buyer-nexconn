@@ -10,7 +10,7 @@ reskilll.com/hack/nexconn. Deadline: Nov 22, 23:59 AoE (= Nov 23, 19:59 Taipei).
 | Project name | GuardRail Buyer — approve AI purchases in chat |
 | Track | Open Innovation (closest example track: "Human agent dispatch center") |
 | SDK used | Chat SDK (Web, `@nexconn/chat` 26.2.1) + Platform Chat API (server) — Call SDK not used |
-| Runnable app link | `<https://… deployed /chat URL — not deployed yet>` |
+| Runnable app link | https://guardrail-buyer-204-44-110-122.sslip.io/chat (dashboard: https://guardrail-buyer-204-44-110-122.sslip.io/ ; webhook: https://guardrail-buyer-204-44-110-122.sslip.io/nexconn/webhook, event `message:send`). Deployed 2026-10-31 from commit 5d96da4; until the App Secret / PayPal Sandbox keys are filled on the server it runs Nexconn **mock** + PayPal **mock** + offline agent. Approver token required — decide how judges get one before submitting. |
 | Public repo | `<https://github.com/<owner>/<repo>` — repository is private; branch `nexconn`>` |
 | Demo video | `<YouTube / Loom link — not recorded yet>` |
 | Write-up PDF | export of the "Write-up" section below, with the App Key filled in |
