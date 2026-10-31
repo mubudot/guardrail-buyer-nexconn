@@ -10,7 +10,7 @@ reskilll.com/hack/nexconn. Deadline: Nov 22, 23:59 AoE (= Nov 23, 19:59 Taipei).
 | Project name | GuardRail Buyer — approve AI purchases in chat |
 | Track | Open Innovation (closest example track: "Human agent dispatch center") |
 | SDK used | Chat SDK (Web, `@nexconn/chat` 26.2.1) + Platform Chat API (server) — Call SDK not used |
-| Runnable app link | https://guardrail-buyer-204-44-110-122.sslip.io/chat (approval room) · https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard). Live since 2026-10-31: Nexconn **live** (area SG, group `grbapprovals`, webhook https://guardrail-buyer-204-44-110-122.sslip.io/nexconn/webhook, event `message:send`), PayPal **Sandbox**, offline rule-based agent (no AI key needed). Joining the room needs the approver token — `<how judges get it: decided by the team leader before submitting>` |
+| Runnable app link | https://guardrail-buyer-204-44-110-122.sslip.io/chat (approval room) · https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard). Live since 2026-10-31: Nexconn **live** (area SG, group `grbroom`, webhook https://guardrail-buyer-204-44-110-122.sslip.io/nexconn/webhook, event `message:send`), PayPal **Sandbox**, offline rule-based agent (no AI key needed). Joining the room needs the approver token — `<how judges get it: decided by the team leader before submitting>` |
 | Public repo | `https://github.com/mubudot/guardrail-buyer/tree/nexconn` — `<repository is private until the team leader makes it public; push branch nexconn>` |
 | Demo video | `<YouTube link>` (file: GuardRail Buyer Nexconn demo, 2–3 min, English) |
 | Write-up PDF | built from the "Write-up" section below, with the App Key filled in |
