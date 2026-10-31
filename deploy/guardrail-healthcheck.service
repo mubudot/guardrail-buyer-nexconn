@@ -1,0 +1,8 @@
+# Example: one liveness check of GuardRail Buyer (see healthcheck.sh). Triggered by the timer.
+[Unit]
+Description=GuardRail Buyer liveness check
+After=guardrail.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/guardrail/deploy/healthcheck.sh

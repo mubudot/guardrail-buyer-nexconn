@@ -1,0 +1,11 @@
+# Example: check GuardRail Buyer's /health/live every 2 minutes.
+[Unit]
+Description=GuardRail Buyer liveness check every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

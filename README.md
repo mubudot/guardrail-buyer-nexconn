@@ -10,6 +10,13 @@
 > https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard) — Nexconn live, PayPal Sandbox, offline agent.
 > **Demo video:** https://youtu.be/XQdg7dW62xc (2:30) ·
 > **What existed before vs. what was built for the challenge:** [below](#prior-work-and-challenge-work).
+>
+> **Try it yourself — no token needed:** https://guardrail-buyer-204-44-110-122.sslip.io/try — one click gives
+> you a private sandbox: your own Nexconn user and approval room, your own limits and data, a rule-based
+> agent and a simulated PayPal checkout. Ask for something under the limit (bought right away), over it
+> (an approval card appears in your room: approve or reject it there), or a gift card (always refused),
+> then pay on the simulated checkout and invite a teammate as a second approver. No sign-up, no e-mail,
+> no real money; sandboxes are deleted after 24 h of inactivity. [How it works](#try-it-no-token-needed).
 
 *The base app was built for the PayPal AI Hackathon (2026) (demo video for that version: https://youtu.be/6pp8X-yFJwk). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
 
@@ -174,7 +181,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 488 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 481 passed, 10 skipped)
+python -m pytest -q                                     # -> 525 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 514 passed, 14 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -287,7 +294,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `488 passed, 3 skipped` (491 tests, 70 of them for the Nexconn chat channel; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` seven more node-only tests are skipped: `481 passed, 10 skipped`).
+1. **Run the tests** — `python -m pytest -q` → see `525 passed, 3 skipped` (528 tests, 107 of them for the Nexconn chat channel and the `/try` playground; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` eleven more node-only tests are skipped: `514 passed, 14 skipped`).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -388,7 +395,8 @@ approver taps Approve in /chat (Nexconn Web Chat SDK) ──► message:send web
 | Webhook signature, time window, single-use nonce, `message:send` parsing | `app/nexconn/webhook.py` |
 | The channel: listens to approval events, posts (outbox + retry), handles decisions | `app/nexconn/channel.py` |
 | Routes: `/chat`, `/nexconn/session`, `/nexconn/webhook`, … | `app/nexconn/routes.py` |
-| Approver chat page on the Nexconn Web Chat SDK (`@nexconn/chat` 26.2.1); loads the latest 50 messages; on join it checks the server's approval list, lists any still-pending approval whose card is older above the room (same buttons) and closes a card in view that was already decided | `app/static/chat.html`, `chat.js`, `chat-transport.js`, `chat-reconcile.js` |
+| Approver chat page on the Nexconn Web Chat SDK (`@nexconn/chat` 26.2.1); loads the latest 50 messages; on join it checks the server's approval list, lists any still-pending approval whose card is older above the room (same buttons) and closes a card in view that was already decided | `app/static/chat.html`, `chat.js`, `chat-room.js` (room rendering, shared with `/try`), `chat-transport.js`, `chat-reconcile.js` |
+| `/try` playground: per-visitor sandbox (own Nexconn user, group and database), invites, limits, expiry | `app/playground/`, `app/static/try.*`, [`docs/PLAYGROUND.md`](docs/PLAYGROUND.md) |
 
 **Rules the chat cannot bend.** Only user ids in `NEXCONN_APPROVER_IDS` can decide (anyone else gets a
 "not an approver" note and nothing changes); a decision must name the approval id (`ok`, `yes`, `approve` alone
@@ -400,6 +408,23 @@ made on the dashboard are posted to the room too, so the room mirrors every appr
 the dashboard's audit log). Posting is best effort and at least once: if Nexconn is down the purchase flow is
 unaffected, the post is kept as `FAILED`, retried automatically (up to 5 times) and by `POST /nexconn/retry`; a
 decision whose handler crashed is finished on the next start or recovery pass.
+
+### Try it (no token needed)
+
+`/try` is a self-serve playground for visitors (`TRY_MODE=on`; off by default, needs `NEXCONN_MODE=mock`
+or `live`). One click creates a **sandbox**: a Nexconn user registered for the visitor (live mode; the
+browser connects with the Web Chat SDK), a private Nexconn group with the agent bot, and a separate SQLite
+database with its own copy of the policy. The page guides through the loop with a progress checklist
+(join the room → under-cap request → over-cap request → approve / reject in the chat → pay on the
+simulated checkout → optionally invite a teammate, who gets their own Nexconn user and joins the room as
+a second approver). Payments are always simulated and the agent is always the rule-based offline agent;
+the playground never calls PayPal or an LLM, and never touches the main database or the judges' room
+(decisions in a sandbox room arrive through the same signed webhook and are routed to that sandbox by
+group id). Limits: per-IP rate limits for creating, joining and agent requests, a cap on active
+sandboxes and on the Nexconn users the playground may register (beyond it new sandboxes run on an
+offline stand-in, labelled in the page), 4 members per sandbox, deletion after 24 h idle. Settings:
+[`TRY_*`](#configuration); isolation model, data lifecycle and threat model:
+[`docs/PLAYGROUND.md`](docs/PLAYGROUND.md).
 
 ### Try it offline (no Nexconn account)
 
@@ -633,6 +658,27 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 | `MCP_DB_PATH` | `:memory:` | MCP server, embedded mode only: database file for the offline sandbox |
 | `PORT`, `GRB_INSTANCE` | – | used by the README launch/ready check only (`GRB_INSTANCE` is echoed by `/health`) |
 | `POLICY_PATH`, `CATALOG_PATH`, `DB_PATH` | `policy.yaml`, `data/catalog.json`, `guardrail.db` | |
+
+**`/try` playground** (off unless `TRY_MODE=on`; invalid values stop the server at startup):
+
+| Env var | Default | Notes |
+|---|---|---|
+| `TRY_MODE` | `off` | `on` serves `/try` (needs `NEXCONN_MODE=mock` or `live`); `off`: the routes answer `404` |
+| `TRY_DIR` | `var/try` | registry database + one database per sandbox |
+| `TRY_TTL_HOURS` | `24` | idle sandboxes expire: database deleted, invite link dead |
+| `TRY_MAX_ACTIVE` | `200` | more active sandboxes → `503` |
+| `TRY_MAX_LIVE_USERS` | `500` | lifetime cap on Nexconn users the playground registers; beyond it sandboxes use the offline stand-in (`0` = always) |
+| `TRY_MAX_MEMBERS` | `4` | members per sandbox, owner included → `409` |
+| `TRY_CREATE_LIMIT` / `TRY_JOIN_LIMIT` | `5/3600` / `10/3600` | per client IP (`N/SECONDS` or `off`) → `429` with `Retry-After` |
+| `TRY_AGENT_LIMIT` / `TRY_AGENT_LIMIT_IP` | `20/600` / `30/600` | agent requests per sandbox / per client IP |
+| `TRY_CACHE_SIZE` | `32` | sandboxes kept open in memory; the rest reload from disk |
+
+**Health and operations.** `GET /health/live` answers `200 {"ok": true}` whenever the process does;
+`GET /health/ready` answers `200` when the database, the Nexconn channel (if on) and the playground
+registry (if on) answer, else `503` naming the failed check. Unexpected errors return a JSON `500` with a
+reference id (logged with the traceback). `deploy/` has an example systemd unit (`Restart=always`) and a
+watchdog timer that restarts the service after three failed liveness checks;
+`python -m app.playground.admin stats | expire-now | purge-expired` manages the playground's data.
 
 ## Status / roadmap
 

@@ -1,0 +1,27 @@
+# Example systemd unit for GuardRail Buyer behind a local reverse proxy (nginx -> 127.0.0.1:8710).
+# Adjust User / paths. Secrets live in the app's .env (loaded by the app), never in this file.
+[Unit]
+Description=GuardRail Buyer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=guardrail
+Group=guardrail
+WorkingDirectory=/opt/guardrail
+# One worker: mock PayPal state and the playground's open sandboxes live in this process.
+# --proxy-headers + --forwarded-allow-ips 127.0.0.1: per-IP rate limits see the visitor's address
+# (the proxy must set X-Forwarded-For).
+ExecStart=/opt/guardrail/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8710 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
+Restart=always
+RestartSec=3
+MemoryMax=350M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/guardrail
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
