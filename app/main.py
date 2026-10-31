@@ -77,6 +77,9 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         raise ConfigError(str(e)) from None
     chat_mode = nexconn_cfg.mode if nexconn == "env" else (nexconn.cfg.mode if nexconn is not None else "off")
     try_cfg = PlaygroundConfig.from_env(nexconn_mode=chat_mode)
+    main_group = nexconn_cfg.group_id if nexconn == "env" and nexconn_cfg else getattr(getattr(nexconn, "cfg", None), "group_id", "")
+    if try_cfg.enabled and main_group.startswith("grbtry"):
+        raise ConfigError("NEXCONN_GROUP_ID must not start with 'grbtry' (reserved for /try playground rooms)")
     svc = service or build_service()
     app.state.service = svc
     # Mock mode is single-process (N3): take the exclusive DB lock first (fails fast if

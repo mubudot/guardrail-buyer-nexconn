@@ -266,21 +266,23 @@ class PlaygroundManager:
         if self.registry.member_count(sid) >= self.cfg.max_members:
             raise PlaygroundError(409, f"This sandbox already has {self.cfg.max_members} members.")
         uid, display = new_user_id(), clean_name(name)
+        secret = secrets.token_urlsafe(32)
+        try:   # take the member slot first, so nobody is registered on Nexconn for a full room
+            self.registry.add_member(sid, {"user_id": uid, "name": display}, secret, self.cfg.max_members)
+        except MembersFull:
+            raise PlaygroundError(409, f"This sandbox already has {self.cfg.max_members} members.") from None
         if row["chat_mode"] == "live":
             if not self.registry.reserve_live_seat(self.cfg.max_live_users):
+                self.registry.remove_member(uid)
                 raise PlaygroundError(503, "Live Nexconn seats are full right now, so no teammate can join this "
                                            "sandbox. Start your own sandbox instead (it runs on an offline stand-in).")
             try:
                 self._register(uid, display)
             except NexconnError as e:
                 self.registry.release_live_seat()
+                self.registry.remove_member(uid)
                 log.warning("playground: teammate registration failed: %s", e)
                 raise PlaygroundError(502, "Nexconn didn't answer; try joining again in a moment.") from None
-        secret = secrets.token_urlsafe(32)
-        try:
-            self.registry.add_member(sid, {"user_id": uid, "name": display}, secret, self.cfg.max_members)
-        except MembersFull:
-            raise PlaygroundError(409, f"This sandbox already has {self.cfg.max_members} members.") from None
         self.registry.touch(sid, 0)
         with self.use(sid) as sb:
             try:
@@ -314,7 +316,11 @@ class PlaygroundManager:
         row, member = self.resolve(secret)
         with self.use(row["id"]) as sb:
             try:
+                if member["user_id"] not in sb.channel.cfg.approver_ids:   # joined while this copy was open
+                    sb.channel.add_member(member["user_id"], member["name"])
                 s = sb.channel.session(member["user_id"])
+            except PermissionError:
+                raise PlaygroundError(403, "You are not a member of this sandbox.") from None
             except NexconnError as e:
                 log.warning("playground session for %s failed: %s", row["id"], e)
                 raise PlaygroundError(502, "Nexconn didn't answer; try again in a moment.") from None
@@ -438,7 +444,14 @@ class PlaygroundManager:
             if not force and now - self._last_sweep < SWEEP_EVERY_S:
                 return []
             self._last_sweep = now
-        return [sid for sid in self.registry.idle(now - self.cfg.ttl_s) if self.expire(sid)]
+        done = []
+        for sid in self.registry.idle(now - self.cfg.ttl_s):
+            try:
+                if self.expire(sid):
+                    done.append(sid)
+            except Exception:   # one broken sandbox must not stop the sweep
+                log.exception("playground: expiring %s failed", sid)
+        return done
 
     def expire(self, sid: str) -> bool:
         with self._lock:

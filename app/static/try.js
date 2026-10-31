@@ -11,8 +11,9 @@ const KEY = "grbTrySession";
 const POLL_MS = 4000;
 
 const state = {secret: localStorage.getItem(KEY) || "", sandbox: null, session: null, transport: null,
-               names: new Map(), poll: null, badConn: 0, roomStarting: false};
+               names: new Map(), poll: null};
 const loc = parseLocation(location.pathname, location.search);
+let roomStarting = null;   // the pending room start, so concurrent callers share it
 
 const room = createRoom({
   list: $("messages"), older: $("older-pending"), session: () => state.session, names: state.names,
@@ -37,9 +38,9 @@ function setConn(s) {
   const ok = s === "connected";   // exact: "disconnected" must not read as connected
   c.textContent = ok ? "Connected" : `Connection: ${s}`;
   c.className = `chip ${ok ? "env-sandbox" : "warn"}`;
-  state.badConn = ok ? 0 : state.badConn + 1;
-  // the offline stand-in forgets room tokens when the server restarts: get a fresh session after a few misses
-  if (!ok && state.badConn >= 3 && state.session?.mode === "mock") { state.badConn = 0; restartRoom(); }
+  // the offline stand-in forgets room tokens when the server restarts (401 -> "session expired"): get a
+  // fresh room session; a transient "reconnecting" just keeps polling
+  if (s === "session expired" && state.session?.mode === "mock" && !roomStarting) restartRoom();
 }
 function setChatMode(mode) {
   const m = $("chat-mode"); m.hidden = false;
@@ -141,6 +142,7 @@ function expired(msg) {
   room.clear();
   $("conn").hidden = true; $("chat-mode").hidden = true;
   showHero(msg);
+  $("name").focus();
 }
 
 function render(s) {
@@ -206,22 +208,23 @@ async function ask(text) {
 }
 
 // ---- room --------------------------------------------------------------------------------------
-async function startRoom() {
-  if (state.roomStarting) return;
-  state.roomStarting = true;
-  try {
-    state.session = await api("/try/session", {method: "POST"});
-    setChatMode(state.session.mode);
-    state.transport = await createTransport(state.session, {mockBase: "/try/mock"});
-    await state.transport.start(room.onMessages, setConn);
-    await room.syncApprovals();
-    refresh();
-  } catch (e) {
-    setConn("not connected");
-    toast(e.status ? e.message : friendlyError({status: 502}), "bad");
-  } finally {
-    state.roomStarting = false;
-  }
+function startRoom() {
+  if (roomStarting) return roomStarting;
+  roomStarting = (async () => {
+    try {
+      state.session = await api("/try/session", {method: "POST"});
+      setChatMode(state.session.mode);
+      state.transport = await createTransport(state.session, {mockBase: "/try/mock"});
+      await state.transport.start(room.onMessages, setConn);
+      await room.syncApprovals();
+      refresh();
+    } catch (e) {
+      if (e.status === 404 || e.status === 401) { expired(e.message); return; }
+      setConn("not connected");
+      toast(e.status ? e.message : friendlyError({status: 502}), "bad");
+    }
+  })().finally(() => { roomStarting = null; });
+  return roomStarting;
 }
 
 async function restartRoom() {

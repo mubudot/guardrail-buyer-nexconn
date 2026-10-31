@@ -167,6 +167,11 @@ class Registry:
                       "VALUES (?,?,?, 'teammate', ?, ?)", (member["user_id"], sandbox_id, member["name"],
                                                            digest(session_secret), self.clock()))
 
+    def remove_member(self, user_id: str) -> None:
+        """Undo add_member when the teammate's Nexconn registration failed."""
+        with self.tx() as c:
+            c.execute("DELETE FROM members WHERE user_id=? AND role='teammate'", (user_id,))
+
     def member_count(self, sandbox_id: str) -> int:
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM members WHERE sandbox_id=?", (sandbox_id,)).fetchone()[0]

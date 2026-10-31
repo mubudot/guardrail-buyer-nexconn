@@ -187,3 +187,24 @@ def test_main_live_without_try_mode_has_no_playground(service, path):
     ch = ChatApprovalChannel(service, LIVE, client, dispatch="inline")
     c = TestClient(create_app(service, approver_token=TOKEN, agent_rate_limit=None, tools_rate_limit=None, nexconn=ch))
     assert c.get(path).status_code == 404
+
+
+def test_failed_teammate_registration_leaves_no_member_and_frees_the_seat(service, monkeypatch, tmp_path):
+    c, fake = live_try(service, monkeypatch, tmp_path)
+    pg = c.app.state.playground
+    s = c.post("/try/start", json={}).json()
+    seats = pg.registry.counter("live_users_registered")
+    fake.fail["/v4/auth/access-token/issue"] = httpx.Response(503)
+    r = c.post("/try/join", json={"code": s["invite_url"].rsplit("/", 1)[1]})
+    assert r.status_code == 502
+    assert pg.registry.member_count(s["sandbox_id"]) == 1 and pg.registry.counter("live_users_registered") == seats
+
+
+def test_main_group_cannot_use_the_playground_prefix(service, monkeypatch, tmp_path):
+    from app.main import ConfigError
+    monkeypatch.setenv("NEXCONN_MODE", "mock")
+    monkeypatch.setenv("NEXCONN_GROUP_ID", "grbtryroom")
+    monkeypatch.setenv("TRY_MODE", "on")
+    monkeypatch.setenv("TRY_DIR", str(tmp_path / "try"))
+    with pytest.raises(ConfigError, match="grbtry"):
+        create_app(service, approver_token=TOKEN)
