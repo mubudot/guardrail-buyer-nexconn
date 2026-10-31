@@ -36,3 +36,9 @@ after a restart.
 - Live review 1 (commit 7446886: SDK status names on the connection chip, decided cards drop their buttons): no substantive issues.
 - Live review 2 (webhook / channel / chat page against the live facts): 2 findings, both fixed in 59065d7 — a re-sent request card (same approval, new message id) kept its buttons after the outcome (P2; every copy is now closed), and the E2E doc said every webhook got 200 although the forged ones got 401 (P3).
 - Live review 3 (verifying 59065d7): no substantive issues.
+
+## Submission review (repo, form texts, write-up PDF against the challenge rules)
+- Round 1: older pending approvals could fall out of the loaded history (latest 50 messages) → listed above the room with the same buttons (52f7621); prior-work wording made complete; README counts.
+- Round 2: findings only in the deployment's judge-token scripts (kept outside the repo); write-up wording.
+- Round 3: after a rejoin, a card in view whose decision is older than the loaded history still showed Approve / Reject (the server refused a second decision, but the page misrepresented it) → on join the page reconciles every card in view with the server's approval list (`app/static/chat-reconcile.js`, node test).
+

@@ -121,8 +121,44 @@ def test_chat_page_connection_chip_and_closed_cards():
     # decision through the chat like any card; it disappears when its card shows up in the history.
     html = (ROOT / "app" / "static" / "chat.html").read_text()
     assert 'id="older-pending"' in html
-    assert 'fetch("/approvals?status=PENDING")' in js
-    assert "!state.cards.has(a.id) && !state.outcomes.has(a.id)" in js
-    assert "await showOlderPending();" in js
+    assert 'fetch("/approvals")' in js
+    assert "planReconcile(list, state.cards.keys(), state.outcomes.keys())" in js
+    assert "close.forEach(({id, status}) => closeCard(id, status));" in js
+    assert "await syncApprovals();" in js
     assert "dropOlderPending(x.approval_id);" in js
     assert js.count("approvalCard(") == 3   # definition, history card, older-pending card
+
+
+RECONCILE = r"""
+const m = await import(process.argv[1]);
+const A = (id, status) => ({id, status, quantity: 1, product_name: 'x', merchant: 'm', amount: '1.00', currency: 'USD'});
+const approvals = [A('APR-00000001', 'PENDING'), A('APR-00000002', 'PENDING'), A('APR-00000003', 'REJECTED'),
+                   A('APR-00000004', 'APPROVED'), A('APR-00000005', 'REJECTED'), A('APR-00000006', 'EXECUTING'),
+                   A('bad-id', 'PENDING'), {id: 'APR-00000007'}, null];
+// in view: card 2 (pending), card 3 (rejected on the dashboard, its outcome is older than the history; e.g. a
+// retried card delivery), card 5 (rejected, outcome in view), card 6 (being executed); not in view: 1 and 4
+const plan = m.planReconcile(approvals, new Set(['APR-00000002', 'APR-00000003', 'APR-00000005', 'APR-00000006']).keys(),
+                             new Map([['APR-00000005', {}]]).keys());
+console.log(JSON.stringify({older: plan.older.map((a) => a.id), close: plan.close,
+  none: m.planReconcile(null, [], []), labels: ['APPROVED', 'REJECTED', 'DENIED_BY_POLICY', 'QUOTE_CHANGED',
+  'EXECUTING', 'SOMETHING_NEW'].map(m.closedLabel)}));
+"""
+
+
+def test_chat_reconcile_with_server_status():
+    """Rejoining the room: a card in view whose approval was already decided (its outcome message is
+    further back than the 50 loaded messages) loses its buttons and shows the server's status; pending
+    approvals without a card in view are listed above the room; cards whose outcome is in view are left to
+    the outcome message. Codex submission review, round 3."""
+    src = (ROOT / "app" / "static" / "chat-reconcile.js").resolve()
+    r = subprocess.run([NODE, "--input-type=module", "-e", RECONCILE, str(src.as_uri())],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["older"] == ["APR-00000001"]
+    assert out["close"] == [{"id": "APR-00000003", "status": "REJECTED"}, {"id": "APR-00000006", "status": "EXECUTING"}]
+    assert out["none"] == {"older": [], "close": []}
+    assert [x["text"] for x in out["labels"]] == ["Closed: approved", "Closed: rejected", "Closed: refused by a hard rule",
+                                                   "Closed: price changed", "Approved: placing the order",
+                                                   "Closed: something new"]
+    assert [x["tone"] for x in out["labels"]] == ["tone-ok", "tone-bad", "tone-bad", "tone-bad", "tone-ok", "tone-bad"]
