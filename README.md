@@ -8,7 +8,7 @@
 > Nexconn's signed webhook into the same guarded code path.
 > **Live demo:** https://guardrail-buyer-204-44-110-122.sslip.io/chat (approval room) ·
 > https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard) — Nexconn live, PayPal Sandbox, offline agent.
-> **Demo video:** NEXCONN_VIDEO_URL_PLACEHOLDER ·
+> **Demo video:** https://youtu.be/XQdg7dW62xc (2:30) ·
 > **What existed before vs. what was built for the challenge:** [below](#prior-work-and-challenge-work).
 
 *The base app was built for the PayPal AI Hackathon (2026) (demo video for that version: https://youtu.be/6pp8X-yFJwk). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
@@ -287,7 +287,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `488 passed, 3 skipped` (491 tests, 70 of them for the Nexconn chat channel; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` six more node-only tests are skipped: `481 passed, 10 skipped`).
+1. **Run the tests** — `python -m pytest -q` → see `488 passed, 3 skipped` (491 tests, 70 of them for the Nexconn chat channel; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` seven more node-only tests are skipped: `481 passed, 10 skipped`).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
