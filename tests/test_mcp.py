@@ -235,8 +235,9 @@ def test_tools_call_maps_refusals_to_is_error(mcp):
 def test_scrub_credentials(monkeypatch):
     monkeypatch.setenv("PAYPAL_CLIENT_SECRET", "pp-secret")
     monkeypatch.setenv("APPROVER_TOKEN", "approver-xyz")
-    assert set(scrub_credentials()) == {"PAYPAL_CLIENT_SECRET", "APPROVER_TOKEN"}
-    assert "PAYPAL_CLIENT_SECRET" not in os.environ and "APPROVER_TOKEN" not in os.environ
+    monkeypatch.setenv("POLICY_OWNER_TOKEN", "owner-xyz")
+    assert set(scrub_credentials()) == {"PAYPAL_CLIENT_SECRET", "APPROVER_TOKEN", "POLICY_OWNER_TOKEN"}
+    assert not {"PAYPAL_CLIENT_SECRET", "APPROVER_TOKEN", "POLICY_OWNER_TOKEN"} & set(os.environ)
 
 
 def test_embedded_mode_refuses_real_paypal(monkeypatch):

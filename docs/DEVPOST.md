@@ -1,7 +1,7 @@
 # Devpost submission draft — GuardRail Buyer
 
 > Draft for the PayPal AI Hackathon form. Paste section by section. Contains no secrets.
-> Placeholders to fill at submission time: `<GITHUB_URL>`, `<YOUTUBE_URL>`.
+> Repo and video links filled in on 2026-10-31.
 
 **Project name:** GuardRail Buyer
 
@@ -191,7 +191,7 @@ python · fastapi · sqlite · paypal-orders-api (v2, Sandbox) · anthropic-clau
 Everything runs locally; no account is needed for the default mode.
 
 ```bash
-git clone <GITHUB_URL> && cd paypal-guardrail-buyer
+git clone https://github.com/mubudot/guardrail-buyer paypal-guardrail-buyer && cd paypal-guardrail-buyer
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -225,4 +225,4 @@ uvicorn app.main:app --port 8000
   `python scripts/sandbox_smoke.py` checks the live Sandbox integration without a buyer login.
 - No real money is involved anywhere; the PayPal side is Sandbox or a local mock.
 
-**Repo:** `<GITHUB_URL>` (MIT) · **Video:** `<YOUTUBE_URL>`
+**Repo:** `https://github.com/mubudot/guardrail-buyer` (MIT) · **Video:** `https://youtu.be/6pp8X-yFJwk`

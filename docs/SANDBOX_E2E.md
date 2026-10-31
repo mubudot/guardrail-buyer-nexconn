@@ -12,7 +12,7 @@
 | Policy | `ALLOW`: within caps, 25.98 ≤ 50.00 per order, today 25.98 ≤ 150.00 (all 8 rules PASS) |
 | PayPal order | `34M919590A962473E` (Orders v2, `intent: CAPTURE`) |
 | PayPal capture | **`8VA9873790040992M`**, status `COMPLETED`, `final_capture: true`, 25.98 USD |
-| Payer | Sandbox personal test account `sb-ztzi053613384@personal.example.com` |
+| Payer | Sandbox personal test account (`sb-…@personal.example.com`, address omitted) |
 
 ## Configuration
 
@@ -50,7 +50,7 @@ Request: *"Order 2 USB-C cables for the new hire's desk"*. 4 model turns, `stop_
 - `GET /decisions` returned 2 rows (policy check ALLOW, create order RESERVED → order status COMPLETED).
 - Read straight from PayPal, `GET https://api-m.sandbox.paypal.com/v2/checkout/orders/34M919590A962473E` returned `status: COMPLETED`,
   `intent: CAPTURE`, `purchase_units[0].payments.captures[0]` = `8VA9873790040992M` / `COMPLETED` / 25.98 USD /
-  `final_capture: true`, and payer `sb-ztzi053613384@personal.example.com`.
+  `final_capture: true`, and payer = the Sandbox personal test account (address omitted).
 
 ## Screenshots (`docs/screenshots/`)
 
