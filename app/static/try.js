@@ -13,12 +13,12 @@ const POLL_MS = 4000;
 const state = {secret: localStorage.getItem(KEY) || "", sandbox: null, session: null, transport: null,
                names: new Map(), poll: null};
 const loc = parseLocation(location.pathname, location.search);
-let roomStarting = null;   // the pending room start, so concurrent callers share it
+let roomStarting = null, roomGen = 0;   // the pending room start (shared by concurrent callers), room generation
 
 const room = createRoom({
   list: $("messages"), older: $("older-pending"), session: () => state.session, names: state.names,
   send: (t, x) => send(t, x),
-  fetchApprovals: async () => (await refresh())?.approvals ?? null,
+  fetchApprovals: async () => (await api("/try/state")).approvals,   // fresh, not a shared in-flight poll
   onCard: (aid, card) => {
     card.classList.add("fresh");
     card.addEventListener("animationend", () => card.classList.remove("fresh"), {once: true});
@@ -140,6 +140,7 @@ async function refresh(first = false) {
 function expired(msg) {
   clearInterval(state.poll);
   refreshSeq++; refreshing = null;   // an in-flight /try/state of this sandbox no longer counts
+  roomGen++; roomStarting = null;     // nor an in-flight room start
   try { state.transport?.stop(); } catch { /* already stopped */ }
   state.transport = null; state.session = null; state.secret = "";
   localStorage.removeItem(KEY);
@@ -214,21 +215,30 @@ async function ask(text) {
 // ---- room --------------------------------------------------------------------------------------
 function startRoom() {
   if (roomStarting) return roomStarting;
-  roomStarting = (async () => {
+  const gen = roomGen;
+  const stale = () => gen !== roomGen;   // the sandbox expired / was replaced while this start was running
+  const p = (async () => {
     try {
-      state.session = await api("/try/session", {method: "POST"});
-      setChatMode(state.session.mode);
-      state.transport = await createTransport(state.session, {mockBase: "/try/mock"});
-      await state.transport.start(room.onMessages, setConn);
+      const session = await api("/try/session", {method: "POST"});
+      if (stale()) return;
+      state.session = session;
+      setChatMode(session.mode);
+      const transport = await createTransport(session, {mockBase: "/try/mock"});
+      if (stale()) return;
+      state.transport = transport;
+      await transport.start(room.onMessages, setConn);
+      if (stale()) { transport.stop(); return; }
       await room.syncApprovals();
       refresh();
     } catch (e) {
+      if (stale()) return;
       if (e.status === 404 || e.status === 401) { expired(e.message); return; }
       setConn("not connected");
       toast(e.status ? e.message : friendlyError({status: 502}), "bad");
     }
-  })().finally(() => { roomStarting = null; });
-  return roomStarting;
+  })().finally(() => { if (roomStarting === p) roomStarting = null; });
+  roomStarting = p;
+  return p;
 }
 
 async function restartRoom() {
