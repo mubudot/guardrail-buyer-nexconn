@@ -103,7 +103,8 @@ async function syncApprovals() {
   } catch { return; }
   const box = $("older-pending");
   if (!box || !Array.isArray(list)) return;
-  const {older: missing, close} = planReconcile(list, state.cards.keys(), state.outcomes.keys());
+  const {older: missing, close, decided} = planReconcile(list, state.cards.keys(), state.outcomes.keys());
+  decided.forEach(({id, status}) => state.closed.set(id, status));   // applied to card copies delivered later
   close.forEach(({id, status}) => closeCard(id, status));
   box.replaceChildren();
   if (!missing.length) { box.hidden = true; return; }

@@ -41,4 +41,4 @@ after a restart.
 - Round 1: older pending approvals could fall out of the loaded history (latest 50 messages) → listed above the room with the same buttons (52f7621); prior-work wording made complete; README counts.
 - Round 2: findings only in the deployment's judge-token scripts (kept outside the repo); write-up wording.
 - Round 3: after a rejoin, a card in view whose decision is older than the loaded history still showed Approve / Reject (the server refused a second decision, but the page misrepresented it) → on join the page reconciles every card in view with the server's approval list (`app/static/chat-reconcile.js`, node test).
-
+- Round 4: a card delivered after join (a retried delivery) for an approval decided earlier still showed buttons → the join-time sync remembers every decided approval and later card copies arrive closed.

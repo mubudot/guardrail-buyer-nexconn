@@ -127,6 +127,7 @@ def test_chat_page_connection_chip_and_closed_cards():
     assert "await syncApprovals();" in js
     # a card copy delivered after join (an at-least-once re-send) for an approval the sync closed arrives closed
     assert "state.closed.set(aid, status);" in js
+    assert "decided.forEach(({id, status}) => state.closed.set(id, status));" in js
     assert "if (state.closed.has(x.approval_id)) closeCard(x.approval_id, state.closed.get(x.approval_id));" in js
     assert "dropOlderPending(x.approval_id);" in js
     assert js.count("approvalCard(") == 3   # definition, history card, older-pending card
@@ -142,7 +143,7 @@ const approvals = [A('APR-00000001', 'PENDING'), A('APR-00000002', 'PENDING'), A
 // retried card delivery), card 5 (rejected, outcome in view), card 6 (being executed); not in view: 1 and 4
 const plan = m.planReconcile(approvals, new Set(['APR-00000002', 'APR-00000003', 'APR-00000005', 'APR-00000006']).keys(),
                              new Map([['APR-00000005', {}]]).keys());
-console.log(JSON.stringify({older: plan.older.map((a) => a.id), close: plan.close,
+console.log(JSON.stringify({older: plan.older.map((a) => a.id), close: plan.close, decided: plan.decided,
   none: m.planReconcile(null, [], []), labels: ['APPROVED', 'REJECTED', 'DENIED_BY_POLICY', 'QUOTE_CHANGED',
   'EXECUTING', 'SOMETHING_NEW'].map(m.closedLabel)}));
 """
@@ -160,7 +161,11 @@ def test_chat_reconcile_with_server_status():
     out = json.loads(r.stdout)
     assert out["older"] == ["APR-00000001"]
     assert out["close"] == [{"id": "APR-00000003", "status": "REJECTED"}, {"id": "APR-00000006", "status": "EXECUTING"}]
-    assert out["none"] == {"older": [], "close": []}
+    # every decided approval (rendered or not; not the one whose outcome is in view) is remembered, so a card
+    # delivered after join (a retried delivery of a card that never reached the room) is rendered closed
+    assert out["decided"] == [{"id": "APR-00000003", "status": "REJECTED"}, {"id": "APR-00000004", "status": "APPROVED"},
+                              {"id": "APR-00000006", "status": "EXECUTING"}]
+    assert out["none"] == {"older": [], "close": [], "decided": []}
     assert [x["text"] for x in out["labels"]] == ["Closed: approved", "Closed: rejected", "Closed: refused by a hard rule",
                                                    "Closed: price changed", "Approved: placing the order",
                                                    "Closed: something new"]
