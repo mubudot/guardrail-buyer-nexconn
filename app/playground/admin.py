@@ -1,7 +1,7 @@
 """Operator CLI for the playground's data directory (no network, works while the server runs):
 
     python -m app.playground.admin [--dir TRY_DIR] stats
-    python -m app.playground.admin [--dir TRY_DIR] expire-now [--all]   # TTL sweep now (--all: every sandbox)
+    python -m app.playground.admin [--dir TRY_DIR] expire-now [--all | --id SID]  # TTL sweep now (or every / one sandbox)
     python -m app.playground.admin [--dir TRY_DIR] purge-expired        # drop expired rows + orphan DB files
 
 A running server notices an expired sandbox on its next request for it (the registry is the
@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stats")
     ex = sub.add_parser("expire-now")
     ex.add_argument("--all", action="store_true", help="expire every active sandbox, not only idle ones")
+    ex.add_argument("--id", dest="ids", action="append", default=[], help="expire this sandbox id (repeatable)")
     sub.add_parser("purge-expired")
     args = p.parse_args(argv)
     d = Path(args.dir)
@@ -40,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(reg.stats()))
         elif args.cmd == "expire-now":
             ttl_h = int(os.environ.get("TRY_TTL_HOURS") or 24)
-            ids = reg.active_ids() if args.all else reg.idle(time.time() - ttl_h * 3600)
+            ids = reg.active_ids() if args.all else (args.ids or reg.idle(time.time() - ttl_h * 3600))
             done = [sid for sid in ids if reg.mark_expired(sid)]
             for sid in done:
                 delete_sandbox_files(d, sid)
