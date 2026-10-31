@@ -39,8 +39,10 @@ _NAME = re.compile(r"[A-Za-z0-9 ._-]{1,24}")
 SWEEP_EVERY_S = 600
 RETRY_EVERY_S = 30
 DB_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db.mock.lock")
-MOCK_ROOM_MESSAGES = 1000        # offline stand-in: messages kept per sandbox room (reset clears nothing here;
-MOCK_TOTAL_MESSAGES = 20000      # the room just refuses new sends) and across all rooms (~20 MB at worst)
+MOCK_ROOM_MESSAGES = 300         # offline stand-in: messages kept per sandbox room (all senders); with
+                                 # TRY_MAX_ACTIVE=200 that bounds the stand-in at ~60k short messages
+MOCK_ROOM_USER_MESSAGES = 250    # visitors' own sends stop here, so the last slots stay for the bot's
+                                 # cards and outcomes; one room filling up never affects another room
 MOCK_SEND_LIMIT = (30, 60.0)     # offline stand-in: room sends per sandbox
 CHECKOUT_LIMIT_IP = (120, 600.0) # simulated checkout requests per client IP
 
@@ -98,8 +100,6 @@ class PlaygroundManager:
         self.mock = mock_client or MockNexconn()
         if self.mock.max_group_messages is None:
             self.mock.max_group_messages = MOCK_ROOM_MESSAGES
-        if self.mock.max_total_messages is None:
-            self.mock.max_total_messages = MOCK_TOTAL_MESSAGES
         self._lock = threading.RLock()
         self._cache: OrderedDict[str, Sandbox] = OrderedDict()
         self._inuse: Counter = Counter()
@@ -132,7 +132,7 @@ class PlaygroundManager:
     def _gone(self, row: dict[str, Any] | None) -> PlaygroundError:
         if row is not None and row["status"] == "ACTIVE":     # idle past the TTL: expire it now
             try:
-                self.expire(row["id"])
+                self.expire(row["id"], idle_before=self.clock() - self.cfg.ttl_s)
             except Exception:   # pragma: no cover - the next sweep retries
                 log.exception("playground: expiring %s failed", row["id"])
         return PlaygroundError(404, "Your sandbox expired. Start a new one.")
@@ -426,6 +426,8 @@ class PlaygroundManager:
     def mock_send(self, token: str | None, text: str, extra: dict | None) -> dict[str, Any]:
         row, uid = self._mock_member(token)
         self._limit(self.mock_send_limiter, row["id"], "room messages in a sandbox")
+        if self.mock.group_count(row["group_id"]) >= MOCK_ROOM_USER_MESSAGES:
+            raise PlaygroundError(429, "This sandbox room is full. Start a new sandbox to keep trying things.")
         self.registry.touch(row["id"])
         extra = _clean_extra(extra)
         with self.use(row["id"]) as sb:
@@ -488,19 +490,21 @@ class PlaygroundManager:
         done = []
         for sid in self.registry.idle(now - self.cfg.ttl_s):
             try:
-                if self.expire(sid):
+                if self.expire(sid, idle_before=now - self.cfg.ttl_s):
                     done.append(sid)
             except Exception:   # one broken sandbox must not stop the sweep
                 log.exception("playground: expiring %s failed", sid)
         return done
 
-    def expire(self, sid: str) -> bool:
+    def expire(self, sid: str, idle_before: float | None = None) -> bool:
+        """Expire a sandbox and delete its data. With `idle_before`, only if it is still idle at that
+        moment (re-checked in the registry under the sandbox's load lock)."""
         with self._lock:
             lk = self._load_locks.setdefault(sid, threading.Lock())
         with lk:
             if not self._drop(sid):
                 return False                # in use right now: the next sweep gets it
-            if not self.registry.mark_expired(sid):
+            if not self.registry.mark_expired(sid, idle_before):
                 return False
             delete_sandbox_files(self.cfg.dir, sid)
             row = self.registry.get(sid)

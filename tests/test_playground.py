@@ -387,7 +387,7 @@ def test_mock_room_sends_are_bounded(service, monkeypatch, tmp_path):
     codes = [c.post("/try/mock/send", headers=tok, json={"text": "hi"}).status_code for _ in range(40)]
     assert 429 in codes and codes.count(200) <= 30
     pg = c.app.state.playground
-    assert pg.mock.max_group_messages and pg.mock.max_total_messages
+    assert pg.mock.max_group_messages and pg.mock.max_total_messages is None   # per-room caps only
 
 
 def test_mock_room_message_cap_answers_429():
@@ -403,3 +403,39 @@ def test_mock_room_message_cap_answers_429():
     assert m.user_for_token(toks[0]) is None and m.user_for_token(toks[-1]) == "u"
     m.revoke_user("u")
     assert m.user_for_token(toks[-1]) is None
+
+
+# ---- Codex cross-review R2 (2026-11-01): conditional expiry, per-room (not shared) message budget ------
+def test_expiry_from_a_stale_check_never_deletes_a_sandbox_that_was_just_used(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    s = start(c)
+    pg = c.app.state.playground
+    sid = s["sandbox_id"]
+    with pg.registry.tx() as x:      # what a slow request saw: idle past the TTL ...
+        x.execute("UPDATE sandboxes SET last_seen=last_seen-? WHERE id=?", (25 * 3600, sid))
+    stale = pg.registry.get(sid)
+    with pg.registry.tx() as x:      # ... but another request has used the sandbox since
+        x.execute("UPDATE sandboxes SET last_seen=? WHERE id=?", (pg.clock(), sid))
+    pg._gone(stale)                  # the slow request's expiry attempt
+    assert pg.sweep(force=True) == []
+    assert pg.registry.get(sid)["status"] == "ACTIVE"
+    assert (tmp_path / "try" / f"{sid}.db").exists()
+    assert c.get("/try/state", headers=H(s)).status_code == 200
+
+
+def test_a_full_room_affects_only_itself_and_keeps_slots_for_the_bot(service, monkeypatch, tmp_path):
+    from app.playground import manager as M
+    monkeypatch.setattr(M, "MOCK_SEND_LIMIT", None)
+    c = make(service, monkeypatch, tmp_path)
+    pg = c.app.state.playground
+    pg.mock_send_limiter = None
+    a, b = start(c, "Ann"), start(c, "Bob")
+    ta = {"X-Nexconn-Token": room(c, a)[0]["token"]}
+    tb = {"X-Nexconn-Token": room(c, b)[0]["token"]}
+    codes = [c.post("/try/mock/send", headers=ta, json={"text": "spam"}).status_code
+             for _ in range(M.MOCK_ROOM_USER_MESSAGES + 5)]
+    assert codes[-1] == 429 and "full" in c.post("/try/mock/send", headers=ta, json={"text": "x"}).json()["detail"]
+    assert pg.mock.group_count(pg.registry.get(a["sandbox_id"])["group_id"]) == M.MOCK_ROOM_USER_MESSAGES
+    assert c.post("/try/mock/send", headers=tb, json={"text": "hi"}).status_code == 200    # other room unaffected
+    r = c.post("/try/agent", headers=H(a), json={"request": "buy the USB-C hub"})          # bot posts still fit
+    assert r.status_code == 200

@@ -206,6 +206,10 @@ class MockNexconn:
                 "time": int(self.clock() * 1000), "os": "Server"})
             return mid
 
+    def group_count(self, group_id: str) -> int:
+        with self.lock:
+            return self._group_counts.get(group_id, 0)
+
     def drop_group(self, group_id: str) -> None:
         """Forget a group and its messages (the /try playground, when a sandbox expires)."""
         with self.lock:

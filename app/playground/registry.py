@@ -205,10 +205,16 @@ class Registry:
         with self.lock:
             return [r[0] for r in self.conn.execute("SELECT id FROM sandboxes WHERE status='EXPIRED'").fetchall()]
 
-    def mark_expired(self, sandbox_id: str) -> bool:
+    def mark_expired(self, sandbox_id: str, idle_before: float | None = None) -> bool:
+        """ACTIVE -> EXPIRED. With `idle_before`, only if the sandbox is STILL idle (its current
+        last_seen is older than the cutoff), so a check made on a stale row cannot expire a sandbox
+        another request has just used."""
         with self.tx() as c:
-            return c.execute("UPDATE sandboxes SET status='EXPIRED' WHERE id=? AND status='ACTIVE'",
-                             (sandbox_id,)).rowcount == 1
+            if idle_before is None:
+                return c.execute("UPDATE sandboxes SET status='EXPIRED' WHERE id=? AND status='ACTIVE'",
+                                 (sandbox_id,)).rowcount == 1
+            return c.execute("UPDATE sandboxes SET status='EXPIRED' WHERE id=? AND status='ACTIVE' AND last_seen < ?",
+                             (sandbox_id, idle_before)).rowcount == 1
 
     def purge(self, sandbox_id: str) -> None:
         """Delete an EXPIRED sandbox's rows (its member names); the counters in meta stay."""
