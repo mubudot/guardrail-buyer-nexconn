@@ -5,10 +5,10 @@ PayPal submission (`25627cc`). Every material finding was fixed and covered by a
 
 | Pass | Commit reviewed | Findings | Fixed in |
 |---|---|---|---|
-| 1 | c0b49b6 | 1 high, 9 medium, 2 low | 4aabf53 |
-| 2 | 4aabf53 | 1 high, 2 medium, 1 low | 10e03f4 |
-| 3 | 10e03f4 | 1 medium | b0fcdd8 |
-| 4 | b0fcdd8 | 2 medium | (this commit) |
+| 1 | 542ade7 | 1 high, 9 medium, 2 low | 1c82dc3 |
+| 2 | 1c82dc3 | 1 high, 2 medium, 1 low | 49fe352 |
+| 3 | 49fe352 | 1 medium | aedb2b3 |
+| 4 | aedb2b3 | 2 medium | (this commit) |
 
 **Pass 1.** Open `DEMO_MODE` could hand out live Nexconn approver tokens → live session/relay need a real
 approver token. Webhook nonces were process-local → stored in SQLite with claim/done states. A failed handler
@@ -33,6 +33,6 @@ recorded as having made the decision is credited; otherwise the post says it was
 after a restart.
 
 ## After the live end-to-end test (docs/NEXCONN_LIVE_E2E.md)
-- Live review 1 (commit 56a0b88: SDK status names on the connection chip, decided cards drop their buttons): no substantive issues.
-- Live review 2 (webhook / channel / chat page against the live facts): 2 findings, both fixed in ee418b1 — a re-sent request card (same approval, new message id) kept its buttons after the outcome (P2; every copy is now closed), and the E2E doc said every webhook got 200 although the forged ones got 401 (P3).
-- Live review 3 (verifying ee418b1): no substantive issues.
+- Live review 1 (commit 7446886: SDK status names on the connection chip, decided cards drop their buttons): no substantive issues.
+- Live review 2 (webhook / channel / chat page against the live facts): 2 findings, both fixed in 59065d7 — a re-sent request card (same approval, new message id) kept its buttons after the outcome (P2; every copy is now closed), and the E2E doc said every webhook got 200 although the forged ones got 401 (P3).
+- Live review 3 (verifying 59065d7): no substantive issues.

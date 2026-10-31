@@ -1,32 +1,15 @@
-# Nexconn Build Challenge 2026 — submission draft (GuardRail Buyer: approve AI purchases in chat)
+# GuardRail Buyer — approve AI purchases in chat (Nexconn Build Challenge 2026 write-up)
 
-*Draft, not submitted. Placeholders in `<…>` are filled by the team leader before submitting on
-reskilll.com/hack/nexconn. Deadline: Nov 22, 23:59 AoE (= Nov 23, 19:59 Taipei). Live end-to-end test: docs/NEXCONN_LIVE_E2E.md.*
+*The text of the submitted write-up PDF (which adds the App Key, links and screenshots). Live end-to-end test: [NEXCONN_LIVE_E2E.md](NEXCONN_LIVE_E2E.md).*
 
-## Form fields
-
-| Field | Value |
-|---|---|
-| Project name | GuardRail Buyer — approve AI purchases in chat |
-| Track | Open Innovation (closest example track: "Human agent dispatch center") |
-| SDK used | Chat SDK (Web, `@nexconn/chat` 26.2.1) + Platform Chat API (server) — Call SDK not used |
-| Runnable app link | https://guardrail-buyer-204-44-110-122.sslip.io/chat (approval room) · https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard). Live since 2026-10-31: Nexconn **live** (area SG, group `grbroom`, webhook https://guardrail-buyer-204-44-110-122.sslip.io/nexconn/webhook, event `message:send`), PayPal **Sandbox**, offline rule-based agent (no AI key needed). Joining the room needs the approver token — `<how judges get it: decided by the team leader before submitting>` |
-| Public repo | `https://github.com/mubudot/guardrail-buyer-nexconn` (repository root; the form rejects /tree/ links). Private until the team leader approves making it public. |
-| Demo video | `<YouTube link>` (file: GuardRail Buyer Nexconn demo, 2–3 min, English) |
-| Write-up PDF | built from the "Write-up" section below, with the App Key filled in |
-| Nexconn App Key | `z3v5yqkbzeht0` (public identifier; the browser receives it too. The App Secret is never shared.) |
-| Traction (optional) | `<active users on the Nexconn app, if any>` |
-
-## Write-up (for the PDF)
-
-### Why we built it
+## Why we built it
 
 AI agents are starting to spend money. The safe pattern is a hard policy between the model and the wallet,
 with a human approving anything above a cap. In practice the weak link is the approval itself: requests sit
 in a dashboard nobody has open, so people either rubber-stamp them later or raise the caps until approvals
 never happen. Approvals need to reach the people who decide, in the place where the team already talks.
 
-### What it does
+## What it does
 
 GuardRail Buyer is an AI purchasing agent that pays with PayPal (Sandbox) only inside spend guardrails a
 deterministic policy engine enforces on the server: per-order cap, daily cap, hard maximum, merchant and
@@ -46,7 +29,7 @@ For this challenge we added a **Nexconn approval room**:
    shows every approval request and how it ended (the dashboard's audit log stays the full record of all
    guardrail decisions, including automatic in-policy purchases and denials).
 
-### Features that use Nexconn
+## Features that use Nexconn
 
 | Feature | Nexconn product / API |
 |---|---|
@@ -56,18 +39,19 @@ For this challenge we added a **Nexconn approval room**:
 | Approver chat page: connect, live messages, history, Approve / Reject, free chat | **Web Chat SDK** `NCEngine.initialize / connect`, `MessageHandler.onMessageReceived`, `GroupChannel.sendMessage(SendTextMessageParams)`, `BaseChannel.createMessagesQuery` |
 | Decisions back to the guardrail engine | Webhook `message:send`, verified with `sha1(AppSecret + Nonce + Timestamp)` |
 
-### What existed before and what we built for this challenge
+## What existed before and what we built for this challenge
 
-*Existing (built earlier for the PayPal AI Hackathon, main branch):* the guardrail engine, the PayPal Orders v2
+*Existing (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at github.com/mubudot/guardrail-buyer):* the guardrail engine, the PayPal Orders v2
 Sandbox integration, the Claude / offline agents, the MCP server and the AG Grid dashboard.
 
 *Built during the Nexconn challenge (new package `app/nexconn/` + `app/static/chat*`):*
 the Nexconn server API client (request signing, data-center failover), the webhook receiver (signature, time
 window, single-use nonces), the approval channel (cards, decision handling, approver allowlist, duplicate-safe,
 outbox with retry), the approver chat page on the Web Chat SDK, an offline mock of the room for tests and demos,
-and 69 new automated tests (490 in total). The only change to the existing core is an observer hook on approval events.
+and 69 new automated tests (490 in total). In the existing code we only added an observer hook on approval events, the wiring for the new routes and an
+"Approval chat" link on the dashboard.
 
-### Safety properties
+## Safety properties
 
 - Only configured approvers can decide; a decision must name the approval id; the bot cannot approve.
 - Every Nexconn message is acted on at most once (webhook retries and replays are absorbed).
@@ -75,30 +59,19 @@ and 69 new automated tests (490 in total). The only change to the existing core 
 - A Nexconn outage never blocks or changes a purchase; failed posts are kept and can be re-sent.
 - With the channel off, the app behaves exactly as before (all earlier tests still pass).
 
-### Business potential
+## Business potential
 
 Every company letting agents buy (procurement, ad spend, cloud resources, travel) needs a fast human
 approval loop with an audit trail. A chat-native approval room is that loop; Nexconn's SDKs make the same
 room available on web, iOS, Android and Flutter, so an approver can decide from a phone in seconds.
 
-### How to run it
+## How to run it
 
 See the README section "Approve in chat (Nexconn)": an offline mock mode needs no account; live mode needs a
 free Nexconn app (App Key + App Secret) and the webhook URL `https://<host>/nexconn/webhook` with the
 `message:send` event.
 
-### AI tools used
+## AI tools used
 
 Code written with AI coding assistants (Hark agent, OpenAI Codex for independent review passes); every
 change is covered by tests.
-
-## Demo video outline (~2 min)
-
-1. 0:00 Problem: agents spend money; approvals stuck in dashboards.
-2. 0:15 Agent request: "a keyboard and a 4K monitor for the new hire" → both over the $50 cap.
-3. 0:30 Two approval cards appear live in the Nexconn approval room (/chat).
-4. 0:50 Approver taps Approve on the keyboard → outcome posted: PayPal order created, decided by … in chat.
-5. 1:10 Types `reject APR-…` for the monitor → closed, nothing bought.
-6. 1:25 Someone not on the approver list tries to approve → "not an approver", nothing changes.
-7. 1:40 Dashboard shows the same state; pay the approved order with PayPal Sandbox.
-8. 1:55 Close: safety properties + tests.
