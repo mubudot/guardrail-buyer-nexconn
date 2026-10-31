@@ -111,16 +111,19 @@ async function enter() {
   state.poll = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
 }
 
-let refreshing = null;
+let refreshing = null, refreshSeq = 0;
 async function refresh(first = false) {
-  if (refreshing && !first) return refreshing;
+  if (refreshing) return refreshing;   // one /try/state call at a time; callers share its result
+  const seq = ++refreshSeq;
   refreshing = (async () => {
     try {
       const s = await api("/try/state");
+      if (seq !== refreshSeq) return null;   // the sandbox changed meanwhile (expired / new one): ignore
       state.sandbox = s;
       render(s);
       return s;
     } catch (e) {
+      if (seq !== refreshSeq) return null;
       if (e.status === 404 || e.status === 401) {     // expired or unknown: back to the start card
         expired(e.message);
       } else if (first) {
@@ -128,7 +131,7 @@ async function refresh(first = false) {
       }
       return null;
     } finally {
-      refreshing = null;
+      if (seq === refreshSeq) refreshing = null;
     }
   })();
   return refreshing;
@@ -136,6 +139,7 @@ async function refresh(first = false) {
 
 function expired(msg) {
   clearInterval(state.poll);
+  refreshSeq++; refreshing = null;   // an in-flight /try/state of this sandbox no longer counts
   try { state.transport?.stop(); } catch { /* already stopped */ }
   state.transport = null; state.session = null; state.secret = "";
   localStorage.removeItem(KEY);
