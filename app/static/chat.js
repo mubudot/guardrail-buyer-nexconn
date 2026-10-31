@@ -15,7 +15,8 @@ function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
-const state = {cfg: null, session: null, transport: null, seen: new Set(), outcomes: new Map(), cards: new Map()};
+const state = {cfg: null, session: null, transport: null, seen: new Set(), outcomes: new Map(), cards: new Map(),
+               closed: new Map()};   // approval id -> server status, for cards closed by syncApprovals()
 const APR = /^APR-[0-9A-F]{8}$/;
 const COMMAND = /^\s*\/?(approve|reject)\s+(APR-[0-9A-F]{8})\s*[.!]?\s*$/i;  // same rule as the server
 const KINDS = new Set(["approval_request", "outcome", "notice", "decision"]);  // known `extra.grb` kinds
@@ -84,6 +85,7 @@ function dropOlderPending(aid) {
 }
 
 function closeCard(aid, status) {
+  state.closed.set(aid, status);   // later copies of this card (a re-sent delivery) arrive closed too
   const {text, tone} = closedLabel(status);
   for (const card of state.cards.get(aid) || []) {
     card.querySelector(".card-actions")?.remove();
@@ -127,6 +129,7 @@ function renderMessage(m) {
   if (bot && x.grb === "approval_request" && APR.test(x.approval_id || "")) {
     body = approvalCard(x.approval_id, m.text);
     dropOlderPending(x.approval_id);
+    if (state.closed.has(x.approval_id)) closeCard(x.approval_id, state.closed.get(x.approval_id));
   } else {
     body = el("pre", {class: "msg-text"}, m.text);
   }
@@ -200,7 +203,7 @@ async function join(ev) {
   } catch (e) {
     try { state.transport?.stop(); } catch { /* already stopped */ }
     state.transport = null;
-    state.seen.clear(); state.cards.clear(); state.outcomes.clear();
+    state.seen.clear(); state.cards.clear(); state.outcomes.clear(); state.closed.clear();
     $("messages").replaceChildren();
     $("older-pending").replaceChildren(); $("older-pending").hidden = true;
     $("room").hidden = true;

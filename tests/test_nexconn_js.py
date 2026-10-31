@@ -125,6 +125,9 @@ def test_chat_page_connection_chip_and_closed_cards():
     assert "planReconcile(list, state.cards.keys(), state.outcomes.keys())" in js
     assert "close.forEach(({id, status}) => closeCard(id, status));" in js
     assert "await syncApprovals();" in js
+    # a card copy delivered after join (an at-least-once re-send) for an approval the sync closed arrives closed
+    assert "state.closed.set(aid, status);" in js
+    assert "if (state.closed.has(x.approval_id)) closeCard(x.approval_id, state.closed.get(x.approval_id));" in js
     assert "dropOlderPending(x.approval_id);" in js
     assert js.count("approvalCard(") == 3   # definition, history card, older-pending card
 
