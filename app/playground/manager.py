@@ -39,6 +39,10 @@ _NAME = re.compile(r"[A-Za-z0-9 ._-]{1,24}")
 SWEEP_EVERY_S = 600
 RETRY_EVERY_S = 30
 DB_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db.mock.lock")
+MOCK_ROOM_MESSAGES = 1000        # offline stand-in: messages kept per sandbox room (reset clears nothing here;
+MOCK_TOTAL_MESSAGES = 20000      # the room just refuses new sends) and across all rooms (~20 MB at worst)
+MOCK_SEND_LIMIT = (30, 60.0)     # offline stand-in: room sends per sandbox
+CHECKOUT_LIMIT_IP = (120, 600.0) # simulated checkout requests per client IP
 
 
 class PlaygroundError(Exception):
@@ -92,6 +96,10 @@ class PlaygroundManager:
         self.live = base_cfg.mode == "live" and live_client is not None
         self.live_client = live_client
         self.mock = mock_client or MockNexconn()
+        if self.mock.max_group_messages is None:
+            self.mock.max_group_messages = MOCK_ROOM_MESSAGES
+        if self.mock.max_total_messages is None:
+            self.mock.max_total_messages = MOCK_TOTAL_MESSAGES
         self._lock = threading.RLock()
         self._cache: OrderedDict[str, Sandbox] = OrderedDict()
         self._inuse: Counter = Counter()
@@ -102,6 +110,7 @@ class PlaygroundManager:
         lim = lambda v: RateLimiter(*v) if v else None  # noqa: E731
         self.create_limiter, self.join_limiter = lim(pcfg.create_limit), lim(pcfg.join_limit)
         self.agent_limiter, self.agent_ip_limiter = lim(pcfg.agent_limit), lim(pcfg.agent_limit_ip)
+        self.mock_send_limiter, self.checkout_limiter = lim(MOCK_SEND_LIMIT), lim(CHECKOUT_LIMIT_IP)
         self.closed = False
         self.sweep(force=True)
 
@@ -114,6 +123,19 @@ class PlaygroundManager:
                 raise PlaygroundError(429, f"You're going fast: at most {limiter.limit} {what} per "
                                            f"{limiter.per:g}s. Try again in a moment.",
                                       {"Retry-After": str(int(wait) + 1)})
+
+    def _alive(self, row: dict[str, Any] | None) -> bool:
+        """ACTIVE and not idle past the TTL (the sweep runs at most every 10 minutes, so every access
+        checks the idle time itself instead of trusting the status alone)."""
+        return row is not None and row["status"] == "ACTIVE" and self.clock() - row["last_seen"] <= self.cfg.ttl_s
+
+    def _gone(self, row: dict[str, Any] | None) -> PlaygroundError:
+        if row is not None and row["status"] == "ACTIVE":     # idle past the TTL: expire it now
+            try:
+                self.expire(row["id"])
+            except Exception:   # pragma: no cover - the next sweep retries
+                log.exception("playground: expiring %s failed", row["id"])
+        return PlaygroundError(404, "Your sandbox expired. Start a new one.")
 
     def invite_url(self, sandbox_id: str) -> str:
         return f"{self.cfg.public_base_url}/try/join/{self.registry.invite_code(sandbox_id)}"
@@ -146,6 +168,9 @@ class PlaygroundManager:
     def use(self, sid: str) -> Iterator[Sandbox]:
         if self.closed:
             raise PlaygroundError(503, "The playground is shutting down; try again in a few seconds.")
+        row = self.registry.get(sid)
+        if not self._alive(row):          # checked before any per-sandbox state (lock, cache) is created
+            raise self._gone(row)
         with self._lock:
             sb = self._cache.get(sid)
             if sb is not None:
@@ -162,6 +187,9 @@ class PlaygroundManager:
                 if sb is None:
                     row = self.registry.get(sid)
                     if row is None or row["status"] != "ACTIVE":
+                        with self._lock:
+                            if self._load_locks.get(sid) is lk:
+                                self._load_locks.pop(sid, None)
                         raise PlaygroundError(404, "Your sandbox expired. Start a new one.")
                     sb = Sandbox(row, self.registry.members(sid), db_path=self.cfg.dir / f"{sid}.db",
                                  base_cfg=self.base_cfg, client=self._client_for(row["chat_mode"]),
@@ -209,8 +237,8 @@ class PlaygroundManager:
         if found is None:
             raise PlaygroundError(401, "Unknown sandbox session. Start a new sandbox.")
         row, member = found
-        if row["status"] != "ACTIVE":
-            raise PlaygroundError(404, "Your sandbox expired. Start a new one.")
+        if not self._alive(row):          # before touch(), so an idle session cannot revive its sandbox
+            raise self._gone(row)
         self.registry.touch(row["id"])
         return row, member
 
@@ -260,7 +288,9 @@ class PlaygroundManager:
         self.sweep()
         self._limit(self.join_limiter, ip, "joins")
         row = self.registry.by_invite(code) if isinstance(code, str) and 0 < len(code) <= 128 else None
-        if row is None or row["status"] != "ACTIVE":
+        if not self._alive(row):
+            if row is not None:
+                self._gone(row)
             raise PlaygroundError(404, "This invite link is unknown or its sandbox expired.")
         sid = row["id"]
         if self.registry.member_count(sid) >= self.cfg.max_members:
@@ -364,7 +394,9 @@ class PlaygroundManager:
         """A message from a playground room (signed webhook in live mode, or the mock transport)."""
         gid = item.get("channelId")
         row = self.registry.by_group(gid) if isinstance(gid, str) else None
-        if row is None or row["status"] != "ACTIVE":
+        if not self._alive(row):
+            if row is not None:
+                self._gone(row)
             return {"result": "IGNORED", "why": "unknown or expired sandbox room"}
         try:
             with self.use(row["id"]) as sb:
@@ -379,7 +411,9 @@ class PlaygroundManager:
         with self.registry.lock:
             m = self.registry.conn.execute("SELECT sandbox_id FROM members WHERE user_id=?", (uid,)).fetchone()
         row = self.registry.get(m["sandbox_id"]) if m else None
-        if row is None or row["status"] != "ACTIVE" or row["chat_mode"] != "mock":
+        if not self._alive(row) or row["chat_mode"] != "mock":
+            if row is not None and row["status"] == "ACTIVE" and row["chat_mode"] == "mock":
+                self._gone(row)
             raise PlaygroundError(401, "Room session expired; reconnecting.")
         return row, uid
 
@@ -391,6 +425,7 @@ class PlaygroundManager:
 
     def mock_send(self, token: str | None, text: str, extra: dict | None) -> dict[str, Any]:
         row, uid = self._mock_member(token)
+        self._limit(self.mock_send_limiter, row["id"], "room messages in a sandbox")
         self.registry.touch(row["id"])
         extra = _clean_extra(extra)
         with self.use(row["id"]) as sb:
@@ -398,11 +433,17 @@ class PlaygroundManager:
             try:
                 mid = self.mock.send_group_text(uid, row["group_id"], text, extra)
             except NexconnError as e:
+                if e.status == 429:
+                    raise PlaygroundError(429, "This sandbox room is full. Start a new sandbox to keep "
+                                               "trying things.") from None
                 raise PlaygroundError(502, str(e)) from None
             return {"message_id": mid,
                     "handled": sb.channel.handle_message(_item(row["group_id"], uid, mid, text, extra), "mock")}
 
     # ---- simulated checkout ----------------------------------------------------------------
+    def checkout_limit(self, ip: str) -> None:
+        self._limit(self.checkout_limiter, ip, "checkout requests")
+
     def checkout_order(self, sid: str, token: str) -> dict[str, Any]:
         with self.use(sid) as sb:
             try:
@@ -465,6 +506,8 @@ class PlaygroundManager:
             row = self.registry.get(sid)
             if row is not None:
                 self.mock.drop_group(row["group_id"])
+            for m in self.registry.members(sid):
+                self.mock.revoke_user(m["user_id"])
             with self._lock:
                 self._paypals.pop(sid, None)
                 self._load_locks.pop(sid, None)

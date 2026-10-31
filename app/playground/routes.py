@@ -104,23 +104,27 @@ def build_router(manager: PlaygroundManager, static_dir) -> APIRouter:
 
     # ---- simulated checkout ----------------------------------------------------------------
     @r.get("/try/s/{sid}/paypal/mock-checkout", response_class=HTMLResponse, include_in_schema=False)
-    async def checkout(sid: str, token: str):
+    async def checkout(request: Request, sid: str, token: str):
+        await call(manager.checkout_limit, client_ip(request))
         order = await call(manager.checkout_order, sid_ok(sid), token)
         return mock_checkout_page(token, order, base=f"/try/s/{sid}",
                                   note="GuardRail playground: simulated payment, no real money moves.")
 
     @r.get("/try/s/{sid}/paypal/mock-approve", include_in_schema=False)
-    async def checkout_approve(sid: str, token: str):
+    async def checkout_approve(request: Request, sid: str, token: str):
+        await call(manager.checkout_limit, client_ip(request))
         await call(manager.checkout_approve, sid_ok(sid), token)
         return RedirectResponse(f"/try/s/{sid}/paypal/return?token={quote(token)}&PayerID=MOCKPAYER", status_code=303)
 
     @r.get("/try/s/{sid}/paypal/return", include_in_schema=False)
-    async def checkout_return(sid: str, token: str, PayerID: str | None = None):
+    async def checkout_return(request: Request, sid: str, token: str, PayerID: str | None = None):
+        await call(manager.checkout_limit, client_ip(request))
         order = await call(manager.checkout_return, sid_ok(sid), token)
         return RedirectResponse(f"/try?paid={quote(order['id'])}&status={quote(order['status'])}", status_code=303)
 
     @r.get("/try/s/{sid}/paypal/cancel", include_in_schema=False)
-    async def checkout_cancel(sid: str, token: str, state: str = ""):
+    async def checkout_cancel(request: Request, sid: str, token: str, state: str = ""):
+        await call(manager.checkout_limit, client_ip(request))
         order = await call(manager.checkout_cancel, sid_ok(sid), token, state)
         if order["result"] in ("CANCELLED", "ALREADY_CANCELLED"):
             return RedirectResponse(f"/try?cancelled={quote(order['id'])}", status_code=303)

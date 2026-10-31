@@ -145,19 +145,37 @@ class MockNexconn:
 
     name = "nexconn-mock"
 
-    def __init__(self, clock: Callable[[], float] = time.time):
+    TOKENS_PER_USER = 4                  # older session tokens of a user are revoked
+
+    def __init__(self, clock: Callable[[], float] = time.time, max_group_messages: int | None = None,
+                 max_total_messages: int | None = None):
         self.clock = clock
         self.lock = threading.Lock()
         self.groups: dict[str, dict[str, Any]] = {}
         self.messages: list[dict[str, Any]] = []
         self.tokens: dict[str, str] = {}
+        self._user_tokens: dict[str, list[str]] = {}
+        self._group_counts: dict[str, int] = {}
+        # Memory caps (None = unbounded, the single-room /chat demo). The /try playground sets both,
+        # so a visitor cannot grow the shared process without bound.
+        self.max_group_messages, self.max_total_messages = max_group_messages, max_total_messages
         self.fail_next_send = 0          # tests: make the next N sends fail
 
     def issue_token(self, user_id: str, name: str) -> str:
         with self.lock:
             tok = f"mock-{secrets.token_urlsafe(16)}"
             self.tokens[tok] = user_id
+            mine = self._user_tokens.setdefault(user_id, [])
+            mine.append(tok)
+            while len(mine) > self.TOKENS_PER_USER:
+                self.tokens.pop(mine.pop(0), None)
             return tok
+
+    def revoke_user(self, user_id: str) -> None:
+        """Invalidate every session token of a user (the /try playground, when a sandbox expires)."""
+        with self.lock:
+            for tok in self._user_tokens.pop(user_id, []):
+                self.tokens.pop(tok, None)
 
     def user_for_token(self, token: str) -> str | None:
         with self.lock:
@@ -176,6 +194,11 @@ class MockNexconn:
                 raise NexconnError("mock: send failed (test)")
             if group_id not in self.groups:
                 raise NexconnError("mock: group does not exist", code=25410)
+            n = self._group_counts.get(group_id, 0)
+            if (self.max_group_messages is not None and n >= self.max_group_messages) or \
+                    (self.max_total_messages is not None and len(self.messages) >= self.max_total_messages):
+                raise NexconnError("mock: room message limit reached", status=429)
+            self._group_counts[group_id] = n + 1
             mid = f"MOCK-{uuid.uuid4().hex[:12].upper()}"
             self.messages.append({
                 "messageId": mid, "userId": from_user, "channelId": group_id, "channelType": 3,
@@ -187,6 +210,7 @@ class MockNexconn:
         """Forget a group and its messages (the /try playground, when a sandbox expires)."""
         with self.lock:
             self.groups.pop(group_id, None)
+            self._group_counts.pop(group_id, None)
             self.messages = [m for m in self.messages if m["channelId"] != group_id]
 
     def history(self, group_id: str, after: int = 0) -> list[dict[str, Any]]:

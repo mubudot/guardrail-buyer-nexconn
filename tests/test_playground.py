@@ -348,3 +348,58 @@ def test_admin_cli(service, monkeypatch, tmp_path, capsys):
     admin.main(["--dir", d, "stats"])
     out = json.loads(capsys.readouterr().out)
     assert out["active"] == 0 and out["expired"] == 0 and out["sandboxes_created"] == 1
+
+
+# ---- Codex cross-review R1 (2026-11-01): memory caps, lock map, idle TTL on every access ------------
+def test_idle_session_cannot_revive_its_sandbox_before_the_sweep(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    s = start(c)
+    chat, _ = room(c, s)
+    pg = c.app.state.playground
+    with pg.registry.tx() as x:     # idle past the TTL, but the 10-minute sweep has not run yet
+        x.execute("UPDATE sandboxes SET last_seen=last_seen-? WHERE id=?", (25 * 3600, s["sandbox_id"]))
+    for r in (c.post("/try/session", headers=H(s)), c.get("/try/state", headers=H(s))):
+        assert r.status_code == 404 and "expired" in r.json()["detail"]
+    assert pg.registry.get(s["sandbox_id"])["status"] == "EXPIRED"
+    assert not (tmp_path / "try" / f"{s['sandbox_id']}.db").exists()
+    tok = {"X-Nexconn-Token": chat["token"]}
+    assert c.get("/try/mock/messages", headers=tok).status_code == 401     # the room token is revoked
+    assert c.get(f"/try/s/{s['sandbox_id']}/paypal/mock-checkout?token=x").status_code == 404
+
+
+def test_unknown_checkout_ids_leave_no_per_sandbox_state(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    pg = c.app.state.playground
+    for i in range(50):
+        assert c.get(f"/try/s/{i:012x}/paypal/mock-checkout?token=x").status_code == 404
+    assert pg._load_locks == {} and len(pg._cache) == 0
+
+
+def test_mock_room_sends_are_bounded(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    s = start(c)
+    chat, _ = room(c, s)
+    tok = {"X-Nexconn-Token": chat["token"]}
+    big = {"grb": "decision", "approval_id": "APR-0001", "decision": "x" * 65536}
+    r = c.post("/try/mock/send", headers=tok, json={"text": "hi", "extra": big})
+    assert r.status_code == 200
+    assert all(len(m["content"]) < 2000 for m in c.get("/try/mock/messages", headers=tok).json()["messages"])
+    codes = [c.post("/try/mock/send", headers=tok, json={"text": "hi"}).status_code for _ in range(40)]
+    assert 429 in codes and codes.count(200) <= 30
+    pg = c.app.state.playground
+    assert pg.mock.max_group_messages and pg.mock.max_total_messages
+
+
+def test_mock_room_message_cap_answers_429():
+    from app.nexconn.client import MockNexconn, NexconnError
+    m = MockNexconn(max_group_messages=3)
+    m.ensure_group("g", "g", "bot", ["bot"])
+    for _ in range(3):
+        m.send_group_text("bot", "g", "x")
+    with pytest.raises(NexconnError) as e:
+        m.send_group_text("bot", "g", "x")
+    assert e.value.status == 429
+    toks = [m.issue_token("u", "u") for _ in range(6)]
+    assert m.user_for_token(toks[0]) is None and m.user_for_token(toks[-1]) == "u"
+    m.revoke_user("u")
+    assert m.user_for_token(toks[-1]) is None

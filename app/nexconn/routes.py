@@ -161,7 +161,8 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
 def _clean_extra(extra: dict | None) -> dict | None:
     """Only a structured decision travels in `extra`; anything else is dropped."""
     if extra is None or extra.get("grb") != "decision" or not (
-            isinstance(extra.get("approval_id"), str) and APPROVAL_ID.fullmatch(extra["approval_id"])):
+            isinstance(extra.get("approval_id"), str) and APPROVAL_ID.fullmatch(extra["approval_id"])) \
+            or extra.get("decision") not in ("approve", "reject"):
         return None
     return {"grb": "decision", "approval_id": extra["approval_id"], "decision": extra.get("decision")}
 
