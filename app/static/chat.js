@@ -58,6 +58,50 @@ async function decide(aid, decision, buttons) {
   }
 }
 
+function approvalCard(aid, text) {
+  const approve = el("button", {class: "btn ok", type: "button"}, "Approve");
+  const reject = el("button", {class: "btn bad", type: "button"}, "Reject");
+  approve.addEventListener("click", () => decide(aid, "approve", [approve, reject]));
+  reject.addEventListener("click", () => decide(aid, "reject", [approve, reject]));
+  const card = el("div", {class: "approval-card", "data-approval": aid},
+    el("div", {class: "card-head"}, el("span", {class: "card-id"}, aid),
+       el("span", {class: "card-state tone-warn"}, "Waiting for a decision")),
+    el("pre", {class: "msg-text"}, text),
+    el("div", {class: "card-actions"}, approve, reject));
+  state.cards.set(aid, [...(state.cards.get(aid) || []), card]);
+  return card;
+}
+
+// Pending approvals whose cards are older than the loaded room history (the page loads the latest 50
+// messages): listed above the room with the same buttons, so no open request is ever out of reach.
+// Deciding still goes through the chat (the decision message + signed webhook), exactly like a card.
+function dropOlderPending(aid) {
+  const box = $("older-pending");
+  box?.querySelector(`[data-older="${aid}"]`)?.remove();
+  if (box && !box.querySelector("[data-older]")) box.hidden = true;
+}
+
+async function showOlderPending() {
+  let list = [];
+  try {
+    const r = await fetch("/approvals?status=PENDING");
+    if (r.ok) list = await r.json();
+  } catch { return; }
+  const box = $("older-pending");
+  if (!box || !Array.isArray(list)) return;
+  const missing = list.filter((a) => APR.test(a.id || "") && !state.cards.has(a.id) && !state.outcomes.has(a.id));
+  box.replaceChildren();
+  if (!missing.length) { box.hidden = true; return; }
+  box.append(el("div", {class: "msg-meta"}, el("strong", {}, "Older pending approvals"),
+                " · their cards are further back in the room history"));
+  for (const a of missing) {
+    const text = `${a.quantity} × ${a.product_name} from ${a.merchant} = ${a.amount} ${a.currency}` +
+                 (a.justification ? `\nAgent's reason: ${a.justification}` : "");
+    box.append(el("div", {class: "older-item", "data-older": a.id}, approvalCard(a.id, text)));
+  }
+  box.hidden = false;
+}
+
 function renderMessage(m) {
   if (!m.id || state.seen.has(m.id)) return;
   state.seen.add(m.id);
@@ -68,17 +112,8 @@ function renderMessage(m) {
   const meta = el("div", {class: "msg-meta"}, el("strong", {}, who(m.from)), time ? ` · ${time}` : "");
   let body;
   if (bot && x.grb === "approval_request" && APR.test(x.approval_id || "")) {
-    const aid = x.approval_id;
-    const approve = el("button", {class: "btn ok", type: "button"}, "Approve");
-    const reject = el("button", {class: "btn bad", type: "button"}, "Reject");
-    approve.addEventListener("click", () => decide(aid, "approve", [approve, reject]));
-    reject.addEventListener("click", () => decide(aid, "reject", [approve, reject]));
-    body = el("div", {class: "approval-card", "data-approval": aid},
-      el("div", {class: "card-head"}, el("span", {class: "card-id"}, aid),
-         el("span", {class: "card-state tone-warn"}, "Waiting for a decision")),
-      el("pre", {class: "msg-text"}, m.text),
-      el("div", {class: "card-actions"}, approve, reject));
-    state.cards.set(aid, [...(state.cards.get(aid) || []), body]);
+    body = approvalCard(x.approval_id, m.text);
+    dropOlderPending(x.approval_id);
   } else {
     body = el("pre", {class: "msg-text"}, m.text);
   }
@@ -145,6 +180,7 @@ async function join(ev) {
     $("room-name").textContent = `Approval room · ${state.session.group_id}`;
     $("room-who").textContent = `You are ${state.session.user_id}. Approvers: ${state.session.approver_ids.join(", ")}`;
     await state.transport.start(onMessages, setConn);   // show the room only once connected
+    await showOlderPending();
     $("join").hidden = true;
     $("room").hidden = false;
     $("text").focus();
@@ -153,6 +189,7 @@ async function join(ev) {
     state.transport = null;
     state.seen.clear(); state.cards.clear(); state.outcomes.clear();
     $("messages").replaceChildren();
+    $("older-pending").replaceChildren(); $("older-pending").hidden = true;
     $("room").hidden = true;
     $("join").hidden = false;
     showError(e.message || String(e));

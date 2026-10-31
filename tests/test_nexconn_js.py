@@ -108,10 +108,21 @@ def test_chat_transports():
 def test_chat_page_connection_chip_and_closed_cards():
     """chat.js: the chip is green only for exactly "connected" (a "disconnected" status used to match
     /connected/), and a decided card loses its Approve / Reject buttons instead of keeping them greyed,
-    on every rendered copy of it (an at-least-once re-send can post the same request card twice)."""
+    on every rendered copy of it (an at-least-once re-send can post the same request card twice); pending
+    approvals older than the loaded history stay reachable."""
     js = (ROOT / "app" / "static" / "chat.js").read_text()
     assert 'const ok = s === "connected";' in js
     assert "/connected|^0$/" not in js
     assert 'card.querySelector(".card-actions")?.remove();' in js
-    assert "state.cards.set(aid, [...(state.cards.get(aid) || []), body]);" in js
+    assert "state.cards.set(aid, [...(state.cards.get(aid) || []), card]);" in js
     assert "for (const card of cards)" in js
+    # The page loads the latest 50 messages; a still-pending approval whose card is older is listed above
+    # the room (GET /approvals?status=PENDING) with the same Approve / Reject buttons, which send the
+    # decision through the chat like any card; it disappears when its card shows up in the history.
+    html = (ROOT / "app" / "static" / "chat.html").read_text()
+    assert 'id="older-pending"' in html
+    assert 'fetch("/approvals?status=PENDING")' in js
+    assert "!state.cards.has(a.id) && !state.outcomes.has(a.id)" in js
+    assert "await showOlderPending();" in js
+    assert "dropOlderPending(x.approval_id);" in js
+    assert js.count("approvalCard(") == 3   # definition, history card, older-pending card

@@ -174,7 +174,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 486 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 481 passed, 8 skipped)
+python -m pytest -q                                     # -> 487 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 481 passed, 9 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -388,7 +388,7 @@ approver taps Approve in /chat (Nexconn Web Chat SDK) ──► message:send web
 | Webhook signature, time window, single-use nonce, `message:send` parsing | `app/nexconn/webhook.py` |
 | The channel: listens to approval events, posts (outbox + retry), handles decisions | `app/nexconn/channel.py` |
 | Routes: `/chat`, `/nexconn/session`, `/nexconn/webhook`, … | `app/nexconn/routes.py` |
-| Approver chat page on the Nexconn Web Chat SDK (`@nexconn/chat` 26.2.1) | `app/static/chat.html`, `chat.js`, `chat-transport.js` |
+| Approver chat page on the Nexconn Web Chat SDK (`@nexconn/chat` 26.2.1); loads the latest 50 messages and lists any still-pending approval whose card is older above the room, with the same buttons | `app/static/chat.html`, `chat.js`, `chat-transport.js` |
 
 **Rules the chat cannot bend.** Only user ids in `NEXCONN_APPROVER_IDS` can decide (anyone else gets a
 "not an approver" note and nothing changes); a decision must name the approval id (`ok`, `yes`, `approve` alone
@@ -443,11 +443,12 @@ read well in any Nexconn client. The mock does not emulate Nexconn beyond what t
 
 | | What | Where |
 |---|---|---|
-| **Existed before** (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer)) | guardrail policy engine, PayPal Orders v2 Sandbox integration, Claude and offline agents, MCP server, AG Grid dashboard | everything outside `app/nexconn/` and `app/static/chat*` |
-| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, 69 new tests | `app/nexconn/`, `app/static/chat.html`, `chat.js`, `chat-transport.js`, `chat.css`, `tests/test_nexconn_*.py`; in the existing code: an observer hook on approval events (`app/service.py`), wiring the channel and its routes into `app/main.py`, an "Approval chat" link on the dashboard, `NEXCONN_*` in `.env.example` |
+| **Existed before** (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer)) | guardrail policy engine, PayPal Orders v2 Sandbox integration, Claude and offline agents, MCP server, AG Grid dashboard | the rest of the code base |
+| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, 69 new tests | `app/nexconn/`, `app/static/chat.html`, `chat.js`, `chat-transport.js`, `chat.css`, `tests/test_nexconn_*.py`; small edits to existing files: an observer hook on approval events (`app/service.py`), wiring of the channel and routes (`app/main.py`), an "Approval chat" link and style on the dashboard, `NEXCONN_*` in `.env.example`, `NEXCONN_APP_SECRET` added to the MCP credential scrub, test fixtures, docs and counts |
 
 The git history shows the split: commits up to `25627cc` are the PayPal version (identical to the public
-PayPal repo); the Nexconn work starts at the commit "Nexconn chat approval channel".
+PayPal repo); the Nexconn work starts at the commit "Nexconn chat approval channel". Later fixes from the
+PayPal repo were merged in (merge commit "Merge main … into nexconn").
 
 ## Use it from any MCP agent (Claude Desktop / Codex)
 

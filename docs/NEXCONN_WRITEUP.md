@@ -48,8 +48,8 @@ Sandbox integration, the Claude / offline agents, the MCP server and the AG Grid
 the Nexconn server API client (request signing, data-center failover), the webhook receiver (signature, time
 window, single-use nonces), the approval channel (cards, decision handling, approver allowlist, duplicate-safe,
 outbox with retry), the approver chat page on the Web Chat SDK, an offline mock of the room for tests and demos,
-and 69 new automated tests (490 in total). In the existing code we only added an observer hook on approval events, the wiring for the new routes and an
-"Approval chat" link on the dashboard.
+and 69 new automated tests (490 in total). Existing files got only small edits: an observer hook on approval events, the wiring for the new routes, an
+"Approval chat" link on the dashboard, configuration examples, the MCP credential scrub, test fixtures and docs.
 
 ## Safety properties
 
