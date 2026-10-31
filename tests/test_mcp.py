@@ -236,8 +236,10 @@ def test_scrub_credentials(monkeypatch):
     monkeypatch.setenv("PAYPAL_CLIENT_SECRET", "pp-secret")
     monkeypatch.setenv("APPROVER_TOKEN", "approver-xyz")
     monkeypatch.setenv("POLICY_OWNER_TOKEN", "owner-xyz")
-    assert set(scrub_credentials()) == {"PAYPAL_CLIENT_SECRET", "APPROVER_TOKEN", "POLICY_OWNER_TOKEN"}
-    assert not {"PAYPAL_CLIENT_SECRET", "APPROVER_TOKEN", "POLICY_OWNER_TOKEN"} & set(os.environ)
+    monkeypatch.setenv("NEXCONN_APP_SECRET", "nx-secret")
+    scrubbed = {"PAYPAL_CLIENT_SECRET", "APPROVER_TOKEN", "POLICY_OWNER_TOKEN", "NEXCONN_APP_SECRET"}
+    assert set(scrub_credentials()) == scrubbed
+    assert not scrubbed & set(os.environ)
 
 
 def test_embedded_mode_refuses_real_paypal(monkeypatch):

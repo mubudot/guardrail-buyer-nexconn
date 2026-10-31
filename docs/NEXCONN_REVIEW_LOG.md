@@ -1,6 +1,6 @@
 # Nexconn chat channel — review log
 
-Independent reviews by OpenAI Codex (gpt-6.1-sol, high reasoning) of the `nexconn` branch diff against the
+Independent reviews by OpenAI Codex (gpt-6.1-sol, high reasoning) of the Nexconn work (the diff from the PayPal version, commit `25627cc`) against the
 PayPal submission (`25627cc`). Every material finding was fixed and covered by a regression test.
 
 | Pass | Commit reviewed | Findings | Fixed in |

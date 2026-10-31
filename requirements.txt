@@ -1,4 +1,4 @@
-# Exact versions tested together (Python 3.12, 2026-10-30): the full suite passes with this set (490 tests on the nexconn branch: 487 passed + 3 skipped without jsdom and the optional mcp SDK; 481 passed + 9 skipped without node).
+# Exact versions tested together (Python 3.12, 2026-10-30): the full suite passes with this set (490 tests in the Nexconn edition: 487 passed + 3 skipped without jsdom and the optional mcp SDK; 481 passed + 9 skipped without node).
 # Direct dependencies
 fastapi==0.162.0
 uvicorn==0.41.0

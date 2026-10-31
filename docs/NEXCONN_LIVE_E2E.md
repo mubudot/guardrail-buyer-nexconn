@@ -1,6 +1,6 @@
 # Nexconn live end-to-end test (2026-10-30 UTC)
 
-Deployment: https://guardrail-buyer-204-44-110-122.sslip.io (branch `nexconn`), with
+Deployment: https://guardrail-buyer-204-44-110-122.sslip.io (Nexconn edition, repository github.com/mubudot/guardrail-buyer-nexconn), with
 `NEXCONN_MODE=live` (area SG, group `grbapprovals`, approvers `approver1`, `approver2`),
 `PAYPAL_MODE=sandbox` (PayPal Sandbox, no real money), `AGENT_MODE=offline` (rule-based agent).
 (After this test the deployment switched to a new group, `grbroom`, which is the room shown in the demo video; same code paths.)

@@ -2,9 +2,16 @@
 
 > An AI purchasing agent that pays with PayPal — but only inside the spend guardrails you set.
 
-*Built for the PayPal AI Hackathon (2026). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
+> **Nexconn Build Challenge 2026 edition — approve AI purchases in chat.** When the agent hits a spend cap,
+> an approval card lands in a Nexconn group chat; an approver taps Approve / Reject in the
+> [approval chat](#approve-in-chat-nexconn) (Nexconn Web Chat SDK) and the decision comes back through
+> Nexconn's signed webhook into the same guarded code path.
+> **Live demo:** https://guardrail-buyer-204-44-110-122.sslip.io/chat (approval room) ·
+> https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard) — Nexconn live, PayPal Sandbox, offline agent.
+> **Demo video:** NEXCONN_VIDEO_URL_PLACEHOLDER ·
+> **What existed before vs. what was built for the challenge:** [below](#prior-work-and-challenge-work).
 
-**Demo video (2:18):** https://youtu.be/6pp8X-yFJwk
+*The base app was built for the PayPal AI Hackathon (2026) (demo video for that version: https://youtu.be/6pp8X-yFJwk). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
 
 ![dashboard](docs/dashboard.png)
 
@@ -359,8 +366,8 @@ the database uses it from its next decision.
 
 ## Approve in chat (Nexconn)
 
-*Added on the `nexconn` branch for the Nexconn Build Challenge 2026. Off unless `NEXCONN_MODE` is set; with it
-unset the app behaves exactly as above.*
+*Added for the Nexconn Build Challenge 2026 (see [prior work](#prior-work-and-challenge-work)). Off unless
+`NEXCONN_MODE` is set; with it unset the app behaves exactly as above.*
 
 Approvals should reach the people who decide, where they already talk. With the Nexconn channel on, every
 **NEEDS_APPROVAL** the agent raises is posted as an approval card into a Nexconn **group channel**; an approver
@@ -431,6 +438,16 @@ shared secret: whoever holds it can join the room as any listed approver (as on 
 every approval). In live mode an open `DEMO_MODE` without `APPROVER_TOKEN` cannot issue Nexconn approver tokens
 or relay decisions (503). Only text messages are used (the structured part rides in the message's `extra`), so the cards
 read well in any Nexconn client. The mock does not emulate Nexconn beyond what the flow needs.
+
+### Prior work and challenge work
+
+| | What | Where |
+|---|---|---|
+| **Existed before** (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer)) | guardrail policy engine, PayPal Orders v2 Sandbox integration, Claude and offline agents, MCP server, AG Grid dashboard | everything outside `app/nexconn/` and `app/static/chat*` |
+| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, 69 new tests | `app/nexconn/`, `app/static/chat.html`, `chat.js`, `chat-transport.js`, `chat.css`, `tests/test_nexconn_*.py`; in the existing code: an observer hook on approval events (`app/service.py`), wiring the channel and its routes into `app/main.py`, an "Approval chat" link on the dashboard, `NEXCONN_*` in `.env.example` |
+
+The git history shows the split: commits up to `25627cc` are the PayPal version (identical to the public
+PayPal repo); the Nexconn work starts at the commit "Nexconn chat approval channel".
 
 ## Use it from any MCP agent (Claude Desktop / Codex)
 

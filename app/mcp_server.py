@@ -38,7 +38,7 @@ SERVER_VERSION = "0.5.0"
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 # Credentials an MCP process must never hold: removed from this process's environment at start.
 SCRUBBED_ENV = ("PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_ACCESS_TOKEN", "APPROVER_TOKEN",
-                "POLICY_OWNER_TOKEN", "STATE_SECRET")
+                "POLICY_OWNER_TOKEN", "STATE_SECRET", "NEXCONN_APP_SECRET")
 INSTRUCTIONS = (
     "Purchasing tools gated by a server-side spend policy (per-order cap, daily cap, hard maximum, "
     "merchant/category allowlists). Always search_catalog first and use the returned product_id; you "

@@ -11,7 +11,7 @@ reskilll.com/hack/nexconn. Deadline: Nov 22, 23:59 AoE (= Nov 23, 19:59 Taipei).
 | Track | Open Innovation (closest example track: "Human agent dispatch center") |
 | SDK used | Chat SDK (Web, `@nexconn/chat` 26.2.1) + Platform Chat API (server) — Call SDK not used |
 | Runnable app link | https://guardrail-buyer-204-44-110-122.sslip.io/chat (approval room) · https://guardrail-buyer-204-44-110-122.sslip.io/ (dashboard). Live since 2026-10-31: Nexconn **live** (area SG, group `grbroom`, webhook https://guardrail-buyer-204-44-110-122.sslip.io/nexconn/webhook, event `message:send`), PayPal **Sandbox**, offline rule-based agent (no AI key needed). Joining the room needs the approver token — `<how judges get it: decided by the team leader before submitting>` |
-| Public repo | `https://github.com/mubudot/guardrail-buyer/tree/nexconn` — `<repository is private until the team leader makes it public; push branch nexconn>` |
+| Public repo | `https://github.com/mubudot/guardrail-buyer-nexconn` (repository root; the form rejects /tree/ links). Private until the team leader approves making it public. |
 | Demo video | `<YouTube link>` (file: GuardRail Buyer Nexconn demo, 2–3 min, English) |
 | Write-up PDF | built from the "Write-up" section below, with the App Key filled in |
 | Nexconn App Key | `z3v5yqkbzeht0` (public identifier; the browser receives it too. The App Secret is never shared.) |
@@ -61,7 +61,7 @@ For this challenge we added a **Nexconn approval room**:
 *Existing (built earlier for the PayPal AI Hackathon, main branch):* the guardrail engine, the PayPal Orders v2
 Sandbox integration, the Claude / offline agents, the MCP server and the AG Grid dashboard.
 
-*Built during the Nexconn challenge (branch `nexconn`, new package `app/nexconn/` + `app/static/chat*`):*
+*Built during the Nexconn challenge (new package `app/nexconn/` + `app/static/chat*`):*
 the Nexconn server API client (request signing, data-center failover), the webhook receiver (signature, time
 window, single-use nonces), the approval channel (cards, decision handling, approver allowlist, duplicate-safe,
 outbox with retry), the approver chat page on the Web Chat SDK, an offline mock of the room for tests and demos,
