@@ -185,7 +185,9 @@ function renderPayBox(orders) {
   if (!unpaid.length) { box.hidden = true; return; }
   box.append(el("span", {class: "pay-label"}, "Waiting for payment"));
   for (const o of unpaid.slice(0, 4)) {
-    box.append(el("a", {class: "btn primary", href: safePayUrl(o.pay_url), target: "_blank", rel: "noopener"},
+    // same tab: the checkout returns to /try, which resumes this sandbox (a second tab would connect the same
+    // Nexconn user twice, and the SDK signs the first connection out)
+    box.append(el("a", {class: "btn primary", href: safePayUrl(o.pay_url)},
                   `Pay on simulated checkout · ${o.quantity} × ${o.product_name} · ${money(o.amount, o.currency)}`));
   }
   box.hidden = false;
