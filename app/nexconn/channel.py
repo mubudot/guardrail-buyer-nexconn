@@ -73,6 +73,8 @@ def _iso(epoch: float) -> str:
 
 
 class ChatApprovalChannel:
+    pay_hint: str | None = None     # where an approved, unpaid order is paid (None: the dashboard)
+
     def __init__(self, svc, cfg: NexconnConfig, client, dispatch: str = "thread"):
         if dispatch not in ("thread", "inline"):
             raise ValueError("dispatch must be 'thread' or 'inline'")
@@ -152,7 +154,7 @@ class ChatApprovalChannel:
                 if order:
                     result = {"result": self.svc._result(order), "order": order}
             by = deciders.get((a["id"], "reject" if a["status"] == "REJECTED" else "approve"))
-            text, extra = outcome_text(a["id"], result, "chat" if by else "recovered", by)
+            text, extra = outcome_text(a["id"], result, "chat" if by else "recovered", by, self.pay_hint)
             self._enqueue(a["id"], "outcome", text, extra)
         return len(rows)
 
@@ -177,7 +179,7 @@ class ChatApprovalChannel:
             self._enqueue(aid, "request", text, extra)
         elif event == "decided":
             via, by = _DECIDER.get() or ("dashboard", None)
-            text, extra = outcome_text(aid, result, via, by)
+            text, extra = outcome_text(aid, result, via, by, self.pay_hint)
             self._enqueue(aid, "outcome", text, extra)
 
     def notice(self, approval_id: str, why: str) -> None:

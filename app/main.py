@@ -2,13 +2,9 @@
 from __future__ import annotations
 
 import hmac
-import html
 import logging
 import os
-import re
 import threading
-import time
-from collections import defaultdict, deque
 from pathlib import Path
 from urllib.parse import quote
 
@@ -31,6 +27,12 @@ from .service import BuyerService, Catalog, MockLockError, PolicyConflict  # noq
 from .tool_gateway import TOOL_NAMES, TOOL_SPECS, GuardedTools  # noqa: E402
 from .nexconn import NexconnConfig, NexconnConfigError, build_channel, relay_enabled  # noqa: E402
 from .nexconn.routes import build_router as build_nexconn_router  # noqa: E402
+from .checkout import mock_checkout_page  # noqa: E402
+from .nexconn.client import MockNexconn  # noqa: E402
+from .playground import PlaygroundConfig, PlaygroundManager  # noqa: E402
+from .playground.routes import build_router as build_try_router  # noqa: E402
+from .stability import build_health_router, install_error_handler  # noqa: E402
+from .ratelimit import ConfigError, RateLimiter, client_ip, parse_rate_limit  # noqa: E402,F401  (re-exported)
 
 log = logging.getLogger("guardrail")
 STATIC = ROOT / "app" / "static"
@@ -54,52 +56,6 @@ def build_service(db_path: str | None = None, paypal_mode: str | None = None) ->
                         db_path or os.environ.get("DB_PATH", str(ROOT / "guardrail.db")))
 
 
-class ConfigError(ValueError):
-    """Invalid startup configuration (fails fast instead of crashing requests later)."""
-
-
-def parse_rate_limit(value: str | None, name: str = "AGENT_RATE_LIMIT") -> tuple[int, float] | None:
-    """"N/SECONDS" (e.g. "20/60") -> (N, SECONDS); "N" alone means per 60 s; "off"
-    (or "none", or a bare "0") disables. N and SECONDS must be positive whole numbers;
-    anything else raises ConfigError at startup (fix round 6, CODEX_REVIEW_3 #4)."""
-    raw = value if value is not None else "20/60"
-    v = raw.strip().lower()
-    if v in ("off", "none", "0"):
-        return None
-    n, sep, per = v.partition("/")
-    n, per = n.strip(), per.strip()
-    if not re.fullmatch(r"[0-9]{1,9}", n) or (sep and not re.fullmatch(r"[0-9]{1,9}", per)) \
-            or int(n) < 1 or (sep and int(per) < 1):
-        raise ConfigError(f"{name}={raw!r} is invalid: use N/SECONDS with positive whole "
-                          f"numbers (e.g. 20/60), or 'off' to disable")
-    return int(n), float(int(per) if sep else 60)
-
-
-class RateLimiter:
-    """In-memory sliding-window limit per client IP (one process only; local-demo scope)."""
-
-    def __init__(self, limit: int, per_seconds: float, clock=time.monotonic):
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 \
-                or not (isinstance(per_seconds, (int, float)) and 0 < per_seconds < float("inf")):
-            raise ConfigError(f"rate limit must be a positive whole number per a positive finite "
-                              f"window, got {limit!r}/{per_seconds!r}")
-        self.limit, self.per, self.clock = limit, per_seconds, clock
-        self.hits: dict[str, deque] = defaultdict(deque)
-        self.lock = threading.Lock()
-
-    def check(self, key: str) -> float | None:
-        """None if allowed (and counted), else seconds until the next request is allowed."""
-        now = self.clock()
-        with self.lock:
-            q = self.hits[key]
-            while q and q[0] <= now - self.per:
-                q.popleft()
-            if len(q) >= self.limit:
-                return max(q[0] + self.per - now, 0.0)
-            q.append(now)
-            return None
-
-
 def create_app(service: BuyerService | None = None, agent: PurchasingAgent | None = None,
                approver_token: str | None = None, demo_mode: bool | None = None,
                agent_rate_limit: tuple[int, float] | None | str = "env",
@@ -119,6 +75,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         nexconn_cfg = NexconnConfig.from_env() if nexconn == "env" else None
     except NexconnConfigError as e:
         raise ConfigError(str(e)) from None
+    chat_mode = nexconn_cfg.mode if nexconn == "env" else (nexconn.cfg.mode if nexconn is not None else "off")
+    try_cfg = PlaygroundConfig.from_env(nexconn_mode=chat_mode)
     svc = service or build_service()
     app.state.service = svc
     # Mock mode is single-process (N3): take the exclusive DB lock first (fails fast if
@@ -184,13 +142,31 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     chat = build_channel(svc, nexconn_cfg) if nexconn == "env" else nexconn
     app.state.nexconn = chat
     if chat is not None:
+        def route_item(item, source):   # playground rooms are routed to their own sandbox
+            pg = app.state.playground
+            if pg is not None and pg.owns(item):
+                return pg.handle_message(item, source)
+            return chat.handle_message(item, source)
         app.include_router(build_nexconn_router(chat, require_approver, STATIC, relay_enabled(),
-                                                approver_auth=bool(token)))
+                                                approver_auth=bool(token), route_item=route_item))
         if chat.cfg.mode == "live":   # register users + group, re-send unsent posts, without delaying startup
             threading.Thread(target=chat.start, name="nexconn-bootstrap", daemon=True).start()
         else:
             chat.start()
         app.router.on_shutdown.append(lambda: chat.drain(5.0))
+
+    # ---- /try playground (off unless TRY_MODE=on; needs the chat channel) ----
+    playground = None
+    if try_cfg.enabled:
+        playground = PlaygroundManager(
+            try_cfg, chat.cfg, live_client=chat.client if chat.cfg.mode == "live" else None,
+            mock_client=MockNexconn(), catalog=svc.catalog,
+            policy=Policy.load(os.environ.get("POLICY_PATH", ROOT / "policy.yaml")))
+        app.include_router(build_try_router(playground, STATIC))
+        app.router.on_shutdown.append(playground.close)
+    app.state.playground = playground
+    install_error_handler(app)
+    app.include_router(build_health_router(svc, chat, playground))
 
     # ---- dashboard -----------------------------------------------------
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -208,7 +184,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                 "agent_rate_limit": f"{limiter.limit}/{limiter.per:g}s" if limiter else None,
                 "tools_rate_limit": f"{tools_limiter.limit}/{tools_limiter.per:g}s" if tools_limiter else None,
                 "instance": os.environ.get("GRB_INSTANCE"),
-                "nexconn": ({**chat.cfg.public(), "ready": chat.ready} if chat is not None else {"mode": "off"})}
+                "nexconn": ({**chat.cfg.public(), "ready": chat.ready} if chat is not None else {"mode": "off"}),
+                "playground": playground.health() if playground is not None else {"mode": "off"}}
 
     @app.get("/policy")
     def get_policy():
@@ -414,15 +391,7 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         except PayPalError:
             raise HTTPException(404, "unknown mock order (mock PayPal state is in-memory and is "
                                      "reset when the server restarts; place a new order)")
-        t = html.escape(token)
-        cancel_q = html.escape(o.get("cancel_query") or "")
-        cancel_href = f"/paypal/cancel?token={t}" + (f"&amp;{cancel_q}" if cancel_q else "")
-        return f"""<!doctype html><html><head><meta charset="utf-8"><title>Mock PayPal checkout</title>
-<link rel="stylesheet" href="/static/app.css"></head><body class="checkout">
-<div class="card"><div class="brand">Mock checkout <span>stands in for the PayPal approval page</span></div>
-<p>{html.escape(o['description'])}</p><p class="amount">{html.escape(o['amount'])} {html.escape(o['currency'])}</p>
-<a class="btn primary" href="/paypal/mock-approve?token={t}">Pay now</a>
-<a class="btn" href="{cancel_href}">Cancel and return</a></div></body></html>"""
+        return mock_checkout_page(token, o)
 
     @app.get("/paypal/mock-approve", include_in_schema=False)
     def mock_approve(token: str):

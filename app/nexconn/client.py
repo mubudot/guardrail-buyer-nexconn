@@ -183,6 +183,12 @@ class MockNexconn:
                 "time": int(self.clock() * 1000), "os": "Server"})
             return mid
 
+    def drop_group(self, group_id: str) -> None:
+        """Forget a group and its messages (the /try playground, when a sandbox expires)."""
+        with self.lock:
+            self.groups.pop(group_id, None)
+            self.messages = [m for m in self.messages if m["channelId"] != group_id]
+
     def history(self, group_id: str, after: int = 0) -> list[dict[str, Any]]:
         with self.lock:
             return [dict(m) for m in self.messages if m["channelId"] == group_id][after:]

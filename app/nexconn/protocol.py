@@ -116,9 +116,14 @@ _OUTCOME_TEXT = {
 }
 
 
-def outcome_text(approval_id: str, result: dict[str, Any], via: str, by: str | None) -> tuple[str, dict]:
+def outcome_text(approval_id: str, result: dict[str, Any], via: str, by: str | None,
+                 pay_hint: str | None = None) -> tuple[str, dict]:
+    """`pay_hint` replaces where an approved, unpaid order is paid (the /try playground pays on its
+    simulated checkout, not from the dashboard)."""
     res = str(result.get("result") or "")
     what = _OUTCOME_TEXT.get(res, res.lower().replace("_", " ") or "decided")
+    if pay_hint and res == "AWAITING_PAYER_APPROVAL":
+        what = f"approved — {pay_hint}"
     who = f" by {by}" if by else ""
     where = {"chat": "in chat", "dashboard": "on the dashboard",
              "recovered": "earlier; posted after a restart"}.get(via, via)

@@ -41,8 +41,12 @@ class RelayBody(BaseModel):
 
 
 def build_router(channel: ChatApprovalChannel, require_approver, static_dir, relay: bool = False,
-                 approver_auth: bool = True) -> APIRouter:
+                 approver_auth: bool = True, route_item=None) -> APIRouter:
+    """`route_item(item, source)`: optional dispatch for signed webhook items (the /try playground
+    routes its own groups' messages); default: every item goes to `channel.handle_message`, which
+    ignores other channels."""
     cfg = channel.cfg
+    route = route_item or channel.handle_message
     r = APIRouter()
 
     def require_real_approver():
@@ -103,7 +107,7 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
         ok = False
         try:
             # handle_message may create a PayPal order: keep it off the event loop
-            handled = [await run_in_threadpool(channel.handle_message, item, "webhook")
+            handled = [await run_in_threadpool(route, item, "webhook")
                        for item in message_events(env)]
             ok = True
         except InboundBusy:
