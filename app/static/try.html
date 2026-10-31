@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Try GuardRail Buyer · your own sandbox</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/chat.css">
+  <link rel="stylesheet" href="/static/try.css">
+  <!-- The Nexconn Web Chat SDK is loaded only for live sandboxes (see chat.html). -->
+  <script type="importmap">
+    {"imports": {"@nexconn/chat": "/nexconn/sdk/chat.mjs", "@nexconn/engine": "/nexconn/sdk/engine.mjs"}}
+  </script>
+</head>
+<body class="chat-page try-page">
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <path d="M16 2.5 4.5 7v8.2c0 7 4.9 12.6 11.5 14.3 6.6-1.7 11.5-7.3 11.5-14.3V7L16 2.5Z" fill="#0070e0"/>
+      <path d="M16 2.5V29.5c6.6-1.7 11.5-7.3 11.5-14.3V7L16 2.5Z" fill="#009cde"/>
+      <path d="m10.5 16.2 3.8 3.8 7.4-7.6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1>Try GuardRail Buyer</h1>
+      <p class="sub">Your own sandbox · real Nexconn chat · simulated PayPal</p>
+    </div>
+  </div>
+  <div class="status">
+    <span id="chat-mode" class="chip" hidden></span>
+    <span id="conn" class="chip" hidden></span>
+    <a class="chip link-chip" href="/">Dashboard</a>
+    <a class="chip link-chip" href="/chat">Approval chat (judges)</a>
+  </div>
+</header>
+
+<main id="main" class="try-main">
+  <!-- before start: hero (also the invite variant) -->
+  <section id="hero" class="card hero" aria-labelledby="hero-title" hidden>
+    <p id="hero-notice" class="hero-notice" role="status" hidden></p>
+    <h2 id="hero-title">Approve your AI buyer's purchases in a chat — try it in a minute</h2>
+    <p id="hero-lede" class="lede">An AI purchasing agent buys within your limits on its own and asks you in a Nexconn
+      chat room before it spends more. You get your own room, your own limits and a simulated PayPal checkout.</p>
+    <ol class="strip" aria-label="How it works">
+      <li><span class="num" aria-hidden="true">1</span><span>Ask the agent to buy something</span></li>
+      <li><span class="num" aria-hidden="true">2</span><span>Over the limit? It asks you in a Nexconn chat</span></li>
+      <li><span class="num" aria-hidden="true">3</span><span>Approve, then pay on a simulated checkout</span></li>
+    </ol>
+    <form id="start-form" class="start-form">
+      <label for="name">Your name (shown in the chat) <span class="optional">optional</span></label>
+      <input id="name" type="text" maxlength="24" autocomplete="nickname" placeholder="e.g. Ada"
+             pattern="[A-Za-z0-9 ._\-]{1,24}" title="Letters, digits, spaces, . - _ (max 24)">
+      <button id="start-btn" class="btn primary big" type="submit">Start my sandbox</button>
+    </form>
+    <p id="start-error" class="error" role="alert" hidden></p>
+    <p class="trust">Free. No sign-up, no e-mail, no real money: payments are simulated, the AI is a rule-based demo
+      agent. Your sandbox and its chat room are private to you and people you invite, and are deleted after 24 h of
+      inactivity.</p>
+  </section>
+
+  <!-- after start: guide + room -->
+  <div id="workspace" class="workspace" hidden>
+    <aside class="guide" aria-label="Guide">
+      <section class="card g-card" aria-labelledby="steps-title">
+        <div class="g-head"><h2 id="steps-title">Your sandbox</h2><span id="expires" class="hint"></span></div>
+        <p id="fallback-note" class="fallback-note" hidden>Live Nexconn seats are full right now — this sandbox runs on
+          an offline stand-in.</p>
+        <ol id="steps" class="steps-list">
+          <li data-step="joined">Join your chat room</li>
+          <li data-step="auto_bought">Ask for something under the limit</li>
+          <li data-step="approval_requested">Ask for something over the limit</li>
+          <li data-step="decided">Approve or reject it in the chat</li>
+          <li data-step="paid">Pay on the simulated checkout</li>
+          <li data-step="invited" class="optional-step">Invite a teammate <span class="optional">optional</span></li>
+        </ol>
+      </section>
+
+      <section class="card g-card" aria-labelledby="ask-title">
+        <h2 id="ask-title">Ask the agent</h2>
+        <div class="try-chips">
+          <button type="button" class="try-chip" data-ask="Buy 2 USB-C charging cables">
+            <span>Buy 2 USB-C charging cables</span><small>under $50 · bought right away</small></button>
+          <button type="button" class="try-chip" data-ask="Buy a 27-inch 4K monitor">
+            <span>Buy a 27-inch 4K monitor</span><small>over $50 · asks you in chat</small></button>
+          <button type="button" class="try-chip" data-ask="Buy a $100 gift card">
+            <span>Buy a $100 gift card</span><small>gift card · always refused</small></button>
+        </div>
+        <form id="ask-form" class="ask-form">
+          <label class="sr-only" for="ask">Your request</label>
+          <input id="ask" type="text" maxlength="500" autocomplete="off" placeholder="e.g. Buy 3 bags of coffee beans">
+          <button class="btn primary" type="submit" id="ask-btn">Send</button>
+        </form>
+        <div id="answer" class="try-answer" aria-live="polite" hidden></div>
+        <div id="pay-box" class="pay-box" hidden></div>
+      </section>
+
+      <section class="card g-card" aria-labelledby="limits-title">
+        <h2 id="limits-title">Limits</h2>
+        <dl class="limits">
+          <div><dt>Per order</dt><dd id="lim-order">—</dd></div>
+          <div><dt>Hard max</dt><dd id="lim-hard">—</dd></div>
+        </dl>
+        <div class="daily">
+          <div class="daily-line"><span>Spent today</span><span id="lim-daily">—</span></div>
+          <div class="bar" role="progressbar" aria-labelledby="limits-title" id="daily-bar" aria-valuemin="0"
+               aria-valuemax="100" aria-valuenow="0"><span id="daily-fill" class="captured"></span></div>
+        </div>
+        <button id="reset-btn" class="text-btn" type="button" hidden>Reset sandbox</button>
+      </section>
+
+      <section class="card g-card" aria-labelledby="invite-title">
+        <h2 id="invite-title">Invite a teammate</h2>
+        <p class="hint">They open the link, get their own Nexconn user and join this room as a second approver.</p>
+        <div class="invite-row">
+          <label class="sr-only" for="invite-url">Invite link</label>
+          <input id="invite-url" type="text" readonly>
+          <button id="copy-btn" class="btn" type="button">Copy</button>
+        </div>
+        <ul id="members" class="members" aria-label="Members"></ul>
+      </section>
+    </aside>
+
+    <section id="room" class="card room try-room" aria-labelledby="room-name">
+      <div class="room-head">
+        <h2><span id="room-name">Approval room</span></h2>
+        <span class="hint" id="room-who"></span>
+      </div>
+      <div id="older-pending" class="older-pending" hidden></div>
+      <ol id="messages" class="messages" aria-live="polite" aria-label="Messages"></ol>
+      <form id="composer" class="composer">
+        <label class="sr-only" for="text">Message</label>
+        <input id="text" type="text" maxlength="500" autocomplete="off"
+               placeholder="Type “approve APR-…” or “reject APR-…”, or chat with your teammates">
+        <button class="btn primary" type="submit">Send</button>
+      </form>
+    </section>
+  </div>
+
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="/static/try.js"></script>
+</body>
+</html>

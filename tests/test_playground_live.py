@@ -122,6 +122,7 @@ def test_live_seat_cap_falls_back_to_the_offline_stand_in(service, monkeypatch, 
     assert s2["chat_mode"] == "mock" and fake.calls == []                 # no Nexconn call at all
     sess = c.post("/try/session", headers={"X-Try-Session": s2["secret"]}).json()
     assert sess["mode"] == "mock" and sess["app_key"] == ""
+    assert c.get("/try/state", headers={"X-Try-Session": s2["secret"]}).json()["chat_fallback"] is True
     assert c.get("/try/mock/messages", headers={"X-Nexconn-Token": sess["token"]}).status_code == 200
     assert c.get("/health").json()["playground"]["chat_fallback"] is True
     t = c.post("/try/join", json={"code": c.post("/try/start", json={}).json()["invite_url"].rsplit("/", 1)[1]})

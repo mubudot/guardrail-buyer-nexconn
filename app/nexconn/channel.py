@@ -154,7 +154,7 @@ class ChatApprovalChannel:
                 if order:
                     result = {"result": self.svc._result(order), "order": order}
             by = deciders.get((a["id"], "reject" if a["status"] == "REJECTED" else "approve"))
-            text, extra = outcome_text(a["id"], result, "chat" if by else "recovered", by, self.pay_hint)
+            text, extra = outcome_text(a["id"], result, "chat" if by else "recovered", self.display_name(by), self.pay_hint)
             self._enqueue(a["id"], "outcome", text, extra)
         return len(rows)
 
@@ -179,8 +179,12 @@ class ChatApprovalChannel:
             self._enqueue(aid, "request", text, extra)
         elif event == "decided":
             via, by = _DECIDER.get() or ("dashboard", None)
-            text, extra = outcome_text(aid, result, via, by, self.pay_hint)
+            text, extra = outcome_text(aid, result, via, self.display_name(by), self.pay_hint)
             self._enqueue(aid, "outcome", text, extra)
+
+    def display_name(self, user_id: str | None) -> str | None:
+        """How a decider is named in the room (the user id; the playground uses display names)."""
+        return user_id
 
     def notice(self, approval_id: str, why: str) -> None:
         text, extra = refusal_text(approval_id, why)

@@ -110,7 +110,10 @@ def test_chat_page_connection_chip_and_closed_cards():
     /connected/), and a decided card loses its Approve / Reject buttons instead of keeping them greyed,
     on every rendered copy of it (an at-least-once re-send can post the same request card twice); pending
     approvals older than the loaded history stay reachable."""
-    js = (ROOT / "app" / "static" / "chat.js").read_text()
+    # the room rendering moved to chat-room.js (shared with the /try playground); chat.js keeps the page
+    page_js = (ROOT / "app" / "static" / "chat.js").read_text()
+    assert 'from "/static/chat-room.js"' in page_js and "approvalCard(" not in page_js
+    js = page_js + (ROOT / "app" / "static" / "chat-room.js").read_text()
     assert 'const ok = s === "connected";' in js
     assert "/connected|^0$/" not in js
     assert 'card.querySelector(".card-actions")?.remove();' in js

@@ -99,6 +99,7 @@ def test_first_run_flow_end_to_end(service, monkeypatch, tmp_path):
     assert s["chat_mode"] == "mock" and s["member"]["role"] == "owner" and s["member"]["name"] == "Ada"
     assert "/try/join/" in s["invite_url"] and len(s["secret"]) >= 40
     st = c.get("/try/state", headers=H(s)).json()
+    assert st["chat_fallback"] is False
     assert st["steps"] == {"joined": False, "auto_bought": False, "approval_requested": False, "decided": False,
                            "paid": False, "denied": False, "invited": False}
     assert st["limits"]["per_order_cap"] == "50.00" and st["limits"]["spent_today"] == "0.00"
@@ -113,7 +114,7 @@ def test_first_run_flow_end_to_end(service, monkeypatch, tmp_path):
     over = ask(c, s, "Buy a 27-inch 4K monitor")
     assert "APR-" in over["final_text"] and not over["pay_links"]
     gift = ask(c, s, "Buy a $100 gift card")
-    assert "refused" in gift["final_text"]
+    assert "1 × Gift Card $100: refused" in gift["final_text"] and "P-5001" not in gift["final_text"]
     st = c.get("/try/state", headers=H(s)).json()
     aid = st["approvals"][0]["id"]
     assert st["approvals"][0]["status"] == "PENDING"
@@ -127,7 +128,8 @@ def test_first_run_flow_end_to_end(service, monkeypatch, tmp_path):
         "text": f"approve {aid}", "extra": {"grb": "decision", "approval_id": aid, "decision": "approve"}}).json()
     assert out["handled"]["result"] == "AWAITING_PAYER_APPROVAL" and out["handled"]["decided_by"] == s["member"]["user_id"]
     outcome = c.get("/try/mock/messages", headers=tok).json()["messages"][-1]
-    assert extra(outcome)["grb"] == "outcome" and "simulated checkout" in json.loads(outcome["content"])["content"]
+    text = json.loads(outcome["content"])["content"]
+    assert extra(outcome)["grb"] == "outcome" and "simulated checkout" in text and "decided by Ada in chat" in text
 
     st = c.get("/try/state", headers=H(s)).json()
     order = next(o for o in st["orders"] if o["approval_id"] == aid)

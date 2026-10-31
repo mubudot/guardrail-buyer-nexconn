@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from ..service import BuyerService
 
 log = logging.getLogger("guardrail.playground")
 
+_QTY_ID = re.compile(r"\b(\d+) x (P-\d{4})\b")
 PAY_HINT = "pay it on the simulated checkout (Pay button in your sandbox guide)"
 DECIDED = ("APPROVED", "REJECTED", "DENIED_BY_POLICY", "QUOTE_CHANGED", "EXECUTING")
 
@@ -54,6 +56,9 @@ class SandboxChannel(ChatApprovalChannel):
                 return False
             self.ready, self.last_error = True, None
             return True
+
+    def display_name(self, user_id: str | None) -> str | None:
+        return self.names.get(user_id, user_id) if user_id else user_id
 
     def add_member(self, user_id: str, name: str) -> None:
         """A teammate joined: they become an approver of this room and are added to the group."""
@@ -139,6 +144,13 @@ class Sandbox:
                        for o in orders[:50]],
             "steps": steps,
         }
+
+    def readable(self, text: str) -> str:
+        """The offline agent's summary names products by id ("2 x P-1001"): use their names."""
+        def name(m: re.Match) -> str:
+            p = self.svc.catalog.get(m.group(2))
+            return f"{m.group(1)} × {p['name']}" if p else m.group(0)
+        return _QTY_ID.sub(name, text)
 
     @staticmethod
     def pay_links(result: dict[str, Any]) -> list[dict[str, Any]]:

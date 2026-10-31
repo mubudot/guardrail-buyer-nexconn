@@ -304,6 +304,7 @@ class PlaygroundManager:
             out = sb.summary()
         out["steps"].update({"joined": bool(row["room_joined"]), "invited": len(members) > 1})
         return {"sandbox_id": sid, "name": row["name"], "chat_mode": row["chat_mode"],
+                "chat_fallback": row["chat_mode"] == "mock" and self.live,
                 "you": {"user_id": member["user_id"], "name": member["name"], "role": member["role"]},
                 "members": [{"user_id": m["user_id"], "name": m["name"], "role": m["role"]} for m in members],
                 "max_members": self.cfg.max_members, "invite_url": self.invite_url(sid),
@@ -326,8 +327,8 @@ class PlaygroundManager:
         self._limit(self.agent_limiter, row["id"], "agent requests in a sandbox")
         with self.use(row["id"]) as sb:
             res = sb.agent.run(request).to_dict()
-        return {"final_text": res["final_text"], "request_id": res["request_id"],
-                "pay_links": Sandbox.pay_links(res)}
+            text = sb.readable(res["final_text"])
+        return {"final_text": text, "request_id": res["request_id"], "pay_links": Sandbox.pay_links(res)}
 
     def reset(self, secret: str | None) -> dict[str, Any]:
         row, member = self.resolve(secret)

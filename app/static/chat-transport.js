@@ -37,11 +37,12 @@ export function statusLabel(statusEnum, status) {
   return `status ${String(status)}`;
 }
 
-export async function createTransport(session) {
-  return session.mode === "live" ? createNexconnTransport(session) : createMockTransport(session);
+export async function createTransport(session, {mockBase = "/nexconn/mock"} = {}) {
+  return session.mode === "live" ? createNexconnTransport(session) : createMockTransport(session, {base: mockBase});
 }
 
-export function createMockTransport(session, {fetchImpl = fetch, intervalMs = 1500} = {}) {
+// `base`: the mock room's routes (/nexconn/mock for the approver chat, /try/mock for the playground).
+export function createMockTransport(session, {fetchImpl = fetch, intervalMs = 1500, base = "/nexconn/mock"} = {}) {
   let next = 0, timer = null, stopped = false;
   const headers = {"X-Nexconn-Token": session.token, "Content-Type": "application/json"};
   const norm = (m) => {
@@ -51,8 +52,8 @@ export function createMockTransport(session, {fetchImpl = fetch, intervalMs = 15
             time: timeOf(m.time)};
   };
   async function poll(onMessages) {
-    const r = await fetchImpl(`/nexconn/mock/messages?after=${next}`, {headers});
-    if (!r.ok) throw new Error(`room: HTTP ${r.status}`);
+    const r = await fetchImpl(`${base}/messages?after=${next}`, {headers});
+    if (!r.ok) { const e = new Error(`room: HTTP ${r.status}`); e.status = r.status; throw e; }
     const data = await r.json();
     next = data.next;
     if (data.messages.length) onMessages(data.messages.map(norm));
@@ -64,14 +65,14 @@ export function createMockTransport(session, {fetchImpl = fetch, intervalMs = 15
       onStatus("connected");
       const loop = async () => {
         if (stopped) return;
-        try { await poll(onMessages); onStatus("connected"); } catch { onStatus("reconnecting"); }
+        try { await poll(onMessages); onStatus("connected"); } catch (e) { onStatus(e?.status === 401 ? "session expired" : "reconnecting"); }
         timer = setTimeout(loop, intervalMs);
       };
       timer = setTimeout(loop, intervalMs);
     },
     async send(text, extra) {
-      const r = await fetchImpl("/nexconn/mock/send", {method: "POST", headers, body: JSON.stringify({text, extra})});
-      if (!r.ok) throw new Error(`send: HTTP ${r.status}`);
+      const r = await fetchImpl(`${base}/send`, {method: "POST", headers, body: JSON.stringify({text, extra})});
+      if (!r.ok) { const e = new Error(`send: HTTP ${r.status}`); e.status = r.status; throw e; }
       const data = await r.json();
       return {messageId: data.message_id};
     },

@@ -6,6 +6,7 @@
 .join input, .join select, .composer input { font: inherit; padding: 8px 10px; border: 1px solid #cdd7e6;
   border-radius: var(--radius-sm); background: #fff; min-width: 200px; }
 .error { color: var(--bad); margin: 10px 0 0; }
+.try-link { margin: 12px 0 0; }
 .room { display: grid; grid-template-rows: auto auto 1fr auto; height: calc(100vh - 140px); min-height: 420px; padding: 0; }
 .room-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap;
   padding: 14px 18px; border-bottom: 1px solid var(--line); }
