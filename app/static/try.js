@@ -5,7 +5,7 @@ import {createTransport} from "/static/chat-transport.js";
 import {createRoom, el} from "/static/chat-room.js";
 import {describeResponse, friendlyError} from "/static/friendly-errors.js";
 import {dailyProgress, money, parseLocation, safePayUrl, stepView} from "/static/try-model.js";
-import {OFFLINE_TOOLTIP, offlineView, watchSdk} from "/static/offline-model.js";
+import {OFFLINE_TOOLTIP, offlineView, sdkRetryDelay, watchSdk} from "/static/offline-model.js";
 import {updateOfflineNotice} from "/static/offline-notice.js";
 
 const $ = (id) => document.getElementById(id);
@@ -271,15 +271,35 @@ async function restartRoom() {
 
 async function fallbackForSdk() {
   if (sdkFallbackPending) return;
-  const gen = roomGen, secret = state.secret;
+  const gen = roomGen, secret = state.secret, current = () => gen === roomGen && secret === state.secret;
   sdkFallbackPending = true;
   try {
-    const s = await api("/try/sdk-failed", {method: "POST"});
-    if (gen !== roomGen || secret !== state.secret) return;
-    state.sandbox = s; render(s);
-    if (s.chat_mode === "mock") await restartRoom();
-  } catch (e) { toast(e.message, "bad"); }
-  finally { sdkFallbackPending = false; }
+    // The watchdog fires once; a busy sandbox (409) or the rate limit (429) must not leave a dead live
+    // chat behind, so retry those with backoff (honouring Retry-After) while this room is still current.
+    for (let attempt = 0; ; attempt++) {
+      let r = null;
+      try {
+        r = await fetch("/try/sdk-failed", {method: "POST",
+          headers: {"Content-Type": "application/json", "X-Try-Session": secret}});
+      } catch { /* network: retried below as status 0 */ }
+      if (!current()) return;
+      if (r?.ok) {
+        const s = await r.json();
+        if (!current()) return;
+        state.sandbox = s; render(s);
+        if (s.chat_mode === "mock") await restartRoom();
+        return;
+      }
+      const status = r ? r.status : 0;
+      const wait = sdkRetryDelay(status, r?.headers.get("Retry-After"), attempt);
+      if (wait === null) {
+        toast(r ? await describeResponse(r, "session") : friendlyError({offline: true}), "bad");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (!current()) return;
+    }
+  } finally { sdkFallbackPending = false; }
 }
 
 async function send(text, extra) {

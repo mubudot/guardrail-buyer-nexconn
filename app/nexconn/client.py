@@ -71,9 +71,14 @@ class NexconnClient:
                 "Signature": sign(self.cfg.app_secret, nonce, ts),
                 "X-Request-ID": uuid.uuid4().hex, "Content-Type": "application/json"}
 
-    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, path: str, body: dict[str, Any],
+              check: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
+        """One Platform API call. `check` validates the answer before it counts as a success, so a
+        200 that is unusable (e.g. no token) counts toward the unrecognised-failure threshold."""
         try:
             out = self._request(path, body)
+            if check is not None:
+                check(out)
         except NexconnError as e:
             if self.upstream is not None:
                 if e.code in (GROUP_EXISTS, ALREADY_MEMBER):
@@ -116,13 +121,17 @@ class NexconnClient:
             return data
         raise last or NexconnError(f"{path}: no API host answered", reason="timeout")
 
-    def issue_token(self, user_id: str, name: str) -> str:
-        data = self._post("/v4/auth/access-token/issue", {"userId": user_id, "name": name[:64]})
-        result = data.get("result") or {}
-        token = result.get("accessToken") or data.get("token")
+    @staticmethod
+    def _token(data: dict[str, Any]) -> str:
+        result = data.get("result")
+        token = (result.get("accessToken") if isinstance(result, dict) else None) or data.get("token")
         if not isinstance(token, str) or not token:
             raise NexconnError("access-token/issue: response has no accessToken")
         return token
+
+    def issue_token(self, user_id: str, name: str) -> str:
+        return self._token(self._post("/v4/auth/access-token/issue", {"userId": user_id, "name": name[:64]},
+                                      check=self._token))
 
     def ensure_group(self, group_id: str, name: str, owner: str, members: list[str]) -> None:
         invite = [m for m in dict.fromkeys(members) if m != owner]

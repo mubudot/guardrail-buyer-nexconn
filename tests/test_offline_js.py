@@ -195,3 +195,26 @@ def test_chat_pending_live_decision_relays_original_session_after_automatic_rejo
     else:
         assert len(out["alerts"]) == 1 and "HTTP 502: relay unavailable" in out["alerts"][0]
         assert out["text"] == "approve APR-12345678"
+
+
+RETRY = r"""
+const m = await import(process.argv[1]);
+console.log(JSON.stringify([
+  m.sdkRetryDelay(409, null, 0), m.sdkRetryDelay(409, null, 1), m.sdkRetryDelay(0, null, 2),
+  m.sdkRetryDelay(429, '31', 0), m.sdkRetryDelay(429, 'soon', 0), m.sdkRetryDelay(429, '600', 0),
+  m.sdkRetryDelay(409, null, 4), m.sdkRetryDelay(409, null, 5), m.sdkRetryDelay(401, null, 0),
+  m.sdkRetryDelay(500, '5', 0),
+]));
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node not available")
+def test_sdk_failed_retry_policy_backs_off_and_honours_retry_after():
+    proc = subprocess.run([NODE, "--input-type=module", "-e", RETRY, (STATIC / "offline-model.js").as_uri()],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == [2000, 4000, 8000, 31000, 2000, 60000, 32000, None, None, None]
+    js = (STATIC / "try.js").read_text()
+    body = js[js.index("async function fallbackForSdk"):js.index("async function send(")]
+    assert "sdkRetryDelay(status, r?.headers.get(\"Retry-After\"), attempt)" in body
+    assert body.count("if (!current()) return;") >= 3     # a restarted room or new session stops retrying

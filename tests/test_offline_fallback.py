@@ -750,3 +750,32 @@ def test_old_registry_migrates_idempotently_with_existing_rows(tmp_path):
         assert old["chat_mode"] == "live" and old["fallback_reason"] is None
         assert old["fallback_since"] is None and old["fallback_detail"] is None
         reg.close()
+
+
+@pytest.mark.parametrize("body", [{"code": 0, "result": {}}, {"code": 200, "result": None},
+                                  {"code": 0, "result": {"accessToken": ""}}, {"code": 0, "result": "x"}])
+def test_unusable_token_answers_count_as_failures_not_successes(body):
+    """A 200 without a usable token is not a success: three in a row switch to the stand-in."""
+    client = NexconnClient(LIVE, http=httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=body))))
+    client.upstream = monitor = UpstreamMonitor()
+    for i in range(3):
+        assert not monitor.offline
+        with pytest.raises(NexconnError, match="no accessToken"):
+            client.issue_token(f"u{i}", "Visitor")
+    assert monitor.offline and monitor.snapshot()["reason"] == "unknown"
+
+
+def test_valid_token_answer_still_counts_as_success_and_resets_the_streak():
+    answers = iter([{"code": 0, "result": {}}, {"code": 0, "result": {}}, {"code": 0, "result": {"accessToken": "T"}},
+                    {"code": 0, "result": {}}, {"code": 0, "result": {}}])
+    client = NexconnClient(LIVE, http=httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=next(answers)))))
+    client.upstream = monitor = UpstreamMonitor()
+    outcomes = []
+    for i in range(5):
+        try:
+            outcomes.append(client.issue_token(f"u{i}", "Visitor"))
+        except NexconnError:
+            outcomes.append(None)
+    assert outcomes == [None, None, "T", None, None] and not monitor.offline

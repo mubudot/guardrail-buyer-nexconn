@@ -53,3 +53,12 @@ export function watchSdk(onFailure, {setTimer = setTimeout, clearTimer = clearTi
     stop() { stopped = true; clearTimer(timer); timer = null; },
   };
 }
+
+// /try/sdk-failed can answer 409 (sandbox busy) or 429 (rate limit, with Retry-After) or fail to
+// reach the server; those are worth retrying. Returns the wait in ms, or null to give up.
+export function sdkRetryDelay(status, retryAfter, attempt, maxAttempts = 6) {
+  if (attempt + 1 >= maxAttempts || ![0, 409, 429].includes(status)) return null;
+  const seconds = Number(retryAfter);
+  const ms = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 2000 * 2 ** attempt;
+  return Math.min(ms, 60000);
+}
