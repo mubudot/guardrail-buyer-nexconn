@@ -58,8 +58,8 @@ no secret values were printed or recorded.
 | 10 | Reset | orders and spend cleared, room and both members kept; the teammate's session still valid | PASS |
 
 Afterwards the three test sandboxes were expired with the operator CLI (`python -m app.playground.admin
-expire-now --id …`): they are marked expired (their sessions and invite links stop working) and their databases on the
-server are deleted. The Nexconn users and groups they created, and those groups' messages, stay on Nexconn's side
+expire-now --id …`): they are marked expired (their sessions and invite links stop working) and their databases (orders,
+approvals, spend) on the server are deleted; the registry keeps the expired rows (display names) until `purge-expired`. The Nexconn users and groups they created, and those groups' messages, stay on Nexconn's side
 (the playground does not delete them; see `docs/PLAYGROUND.md`). Nothing in the main approval
 room (`grbroom`) or its database changed. `journalctl -u guardrail` showed only 200s for Nexconn's webhook
 deliveries during the run and no errors.

@@ -140,7 +140,7 @@ def test_try_page_wiring():
         assert chip in html
     assert 'aria-live="polite"' in html and 'id="answer"' in html and 'for="name"' in html
     assert "Approve your AI buyer's purchases in a chat — try it in a minute" in html
-    assert "After 24 h of inactivity the" in html and "stay with our chat provider, Nexconn" in html
+    assert "After 24 h of inactivity the" in html and "kept by our chat provider, Nexconn" in html
     css = (STATIC / "try.css").read_text()
     assert "prefers-reduced-motion" in css and "grid-template-columns: 380px" in css
     assert "@import" not in css and "http" not in css.replace("http://www.w3.org/2000/svg", "")

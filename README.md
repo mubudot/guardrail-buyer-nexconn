@@ -16,7 +16,7 @@
 > agent and a simulated PayPal checkout. Ask for something under the limit (bought right away), over it
 > (an approval card appears in your room: approve or reject it there), or a gift card (always refused),
 > then pay on the simulated checkout and invite a teammate as a second approver. No sign-up, no e-mail,
-> no real money; after 24 h of inactivity a sandbox closes and its data on the server is deleted (chat messages stay on Nexconn). [How it works](#try-it-no-token-needed).
+> no real money; after 24 h of inactivity a sandbox closes and its orders and approvals are deleted (display names stay in the server's sandbox list until an operator purges them; chat messages stay on Nexconn). [How it works](#try-it-no-token-needed).
 
 *The base app was built for the PayPal AI Hackathon (2026) (demo video for that version: https://youtu.be/6pp8X-yFJwk). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
 

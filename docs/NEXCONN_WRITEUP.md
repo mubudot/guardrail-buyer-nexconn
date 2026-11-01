@@ -33,7 +33,7 @@ For this challenge we added a **Nexconn approval room**:
 the server registers the visitor as a real Nexconn user, creates a private approval group for them, and gives them their own
 policy and database (simulated checkout, no money). An invite link adds a teammate as a second approver, so two
 people can see the same card and one of them decides it in the chat. Sandboxes are rate-limited, capped, expire
-after 24 idle hours (their data on our server is deleted) and can be reset; past the live-registration cap, new
+after 24 idle hours (their orders and approvals are deleted) and can be reset; past the live-registration cap, new
 sandboxes use an offline stand-in for the chat, and the main room is never affected.
 
 ## Features that use Nexconn
@@ -45,7 +45,7 @@ sandboxes use an offline stand-in for the chat, and the main room is never affec
 | Approval cards and outcome messages (text + structured `extra`) | Platform Chat API `POST /v4/group-channel/message/send` |
 | Approver chat page: connect, live messages, history, Approve / Reject, free chat | **Web Chat SDK** `NCEngine.initialize / connect`, `MessageHandler.onMessageReceived`, `GroupChannel.sendMessage(SendTextMessageParams)`, `BaseChannel.createMessagesQuery` |
 | Decisions back to the guardrail engine | Webhook `message:send`, verified with `sha1(AppSecret + Nonce + Timestamp)` |
-| `/try` playground: every visitor and invited teammate is a real Nexconn user in their own private group | Platform Chat API (token issue, group create / join) + Web Chat SDK in the shared room view |
+| `/try` playground (live mode): each visitor and invited teammate is a real Nexconn user in their own private group | Platform Chat API (token issue, group create / join) + Web Chat SDK in the shared room view |
 
 ## What existed before and what we built for this challenge
 
