@@ -181,7 +181,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 527 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 516 passed, 14 skipped)
+python -m pytest -q                                     # -> 536 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 526 passed, 13 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -294,7 +294,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `527 passed, 3 skipped` (530 tests, 109 of them for the Nexconn chat channel and the `/try` playground; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` eleven more node-only tests are skipped: `516 passed, 14 skipped`).
+1. **Run the tests** — `python -m pytest -q` → see `536 passed, 3 skipped` (539 tests, 118 of them for the Nexconn chat channel and the `/try` playground; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` ten more node-only tests are skipped: `526 passed, 13 skipped`).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real

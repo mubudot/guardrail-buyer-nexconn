@@ -33,3 +33,35 @@ Fixed after the run (chat page only): the connection chip showed raw SDK status 
 shows the SDK enum name and is green only for exactly "connected". Decided cards now drop their
 Approve / Reject buttons instead of keeping them greyed out, on every copy of the card (an
 at-least-once re-send can post the same request card twice; each copy is closed by the outcome).
+
+# Live end-to-end test 2: the `/try` playground (2026-11-01 UTC)
+
+Deployment: same host, code `532ebf9` (the stale-session fix below), `TRY_MODE=on`, Nexconn **live** (SG),
+playground payments on the built-in simulated checkout (no PayPal account, no money). Two separate headless
+Chromium browsers played two strangers: an **owner** who opened `/try` and a **teammate** who opened the owner's
+invite link. Each became a fresh Nexconn user (registered by the server with the Platform Chat API) in the
+sandbox's own private group; both connected with the real Web Chat SDK. Decisions reached the server only
+through Nexconn's signed `message:send` webhook. Script: `live_try_e2e.py` (kept outside the repository);
+no secret values were printed or recorded.
+
+| # | Scenario | What happened | Result |
+|---|----------|---------------|--------|
+| 1 | Start a sandbox | one click → own sandbox, chat mode `live` ("Nexconn live · SG"), Connected, welcome post from the agent's bot user | PASS |
+| 2 | Invite a teammate | the invite link joined a second Nexconn user to the same private group (roles owner + teammate) | PASS |
+| 3 | Over the per-order cap: "Buy a 27-inch 4K monitor" ($329 > $50) | approval card delivered live to **both** browsers | PASS |
+| 4 | Teammate approves in chat | Approve → Nexconn → signed webhook → `APPROVED`, simulated order created; outcome "approved … (decided by Live teammate in chat)" in the room; owner's guide ticked "decided" within 1.8 s | PASS |
+| 5 | 36 concurrent `GET /try/state` with the owner's session (the path of the stale-session fix) | 36 × 200, session still valid | PASS |
+| 6 | Hard rule: "Buy a $100 gift card" | refused (blocked merchant, category not allowed); no card, no order | PASS |
+| 7 | Daily cap after the approval: "Buy 2 USB-C charging cables" ($25.98, under the per-order cap) | today's spend was already $329 of $150, so it became a new approval card ("daily spend would be 354.98 … over daily cap 150.00") instead of an automatic order — the daily cap holds even after a human approved a bigger purchase. The same request in a fresh sandbox was bought right away (order `PAYER_ACTION_REQUIRED`, no card) | PASS |
+| 8 | Late typed decision | teammate typed `reject APR-…` after approving → "approval is already APPROVED; nothing changed" | PASS |
+| 9 | Pay | simulated checkout in the same tab → back on `/try`, sandbox resumed, guide ticked "paid" | PASS |
+| 10 | Reset | orders and spend cleared, room and both members kept; the teammate's session still valid | PASS |
+
+Afterwards the three test sandboxes were expired with the operator CLI (`python -m app.playground.admin
+expire-now --id …`): their databases are deleted and their room tokens revoked. Nothing in the main approval
+room (`grbroom`) or its database changed. `journalctl -u guardrail` showed only 200s for Nexconn's webhook
+deliveries during the run and no errors.
+
+Six Nexconn users have been registered by the playground so far (these tests and one earlier smoke test; counter in the playground registry);
+the playground caps live registrations at 500 (`TRY_MAX_LIVE_USERS`) and falls back to the offline stand-in
+after that, well inside the free plan's 2,000 monthly active users.

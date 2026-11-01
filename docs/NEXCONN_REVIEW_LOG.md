@@ -42,3 +42,10 @@ after a restart.
 - Round 2: findings only in the deployment's judge-token scripts (kept outside the repo); write-up wording.
 - Round 3: after a rejoin, a card in view whose decision is older than the loaded history still showed Approve / Reject (the server refused a second decision, but the page misrepresented it) → on join the page reconciles every card in view with the server's approval list (`app/static/chat-reconcile.js`, node test).
 - Round 4: a card delivered after join (a retried delivery) for an approval decided earlier still showed buttons → the join-time sync remembers every decided approval and later card copies arrive closed.
+
+## `/try` playground (independent reviews: Claude for the first pass, then OpenAI Codex)
+- Claude rounds 1–4: 16 findings in round 1 (8 fixed, 8 answered), then 1 + 1 frontend fixes; round 4 no substantive issues.
+- Codex round 1: 1×P1 (the offline room stand-in could be filled without bound) + 2×P2 (unknown checkout ids grew a lock map; an idle session could revive its sandbox before the sweep) → fixed in 48b1a9b (decision values, per-room caps, send rate limit, token revocation, validation before any per-sandbox state, idle TTL checked on every access).
+- Codex round 2: 2×P2 (an expiry decided on a stale row could delete a sandbox that had just been used; one room could exhaust a shared message pool) → fixed in 904137c (expiry re-checks the current last_seen in the registry; per-room budget with a reserve for the bot's cards).
+- Codex round 3: no P1/P2; 1×P3 — when that conditional expiry declined, the request still answered 404, so a concurrent stale request made the page drop a valid session → fixed in 532ebf9 (the row is read again and used when it is alive; three regression tests).
+- Codex round 4: no findings; the round-3 reproduction now answers 200 and the browser keeps its session; truly idle sandboxes still expire.

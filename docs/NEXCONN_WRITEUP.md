@@ -1,6 +1,6 @@
 # GuardRail Buyer — approve AI purchases in chat (Nexconn Build Challenge 2026 write-up)
 
-*The text of the submitted write-up PDF (which adds the App Key, links and screenshots). Live end-to-end test: [NEXCONN_LIVE_E2E.md](NEXCONN_LIVE_E2E.md).*
+*The text of the submitted write-up PDF (which adds the App Key, links and screenshots). Live end-to-end tests (main room and `/try`): [NEXCONN_LIVE_E2E.md](NEXCONN_LIVE_E2E.md).*
 
 ## Why we built it
 
@@ -29,6 +29,13 @@ For this challenge we added a **Nexconn approval room**:
    shows every approval request and how it ended (the dashboard's audit log stays the full record of all
    guardrail decisions, including automatic in-policy purchases and denials).
 
+**Try it in one click (`/try`).** Anyone can open a private sandbox with no account and no token: the server
+registers the visitor as a real Nexconn user, creates a private approval group for them, and gives them their own
+policy and database (simulated checkout, no money). An invite link adds a teammate as a second approver, so two
+people can see the same card and one of them decides it in the chat. Sandboxes are rate-limited, capped, expire
+after 24 idle hours and can be reset; past the live-registration cap the playground falls back to an offline
+stand-in so the main room is never affected.
+
 ## Features that use Nexconn
 
 | Feature | Nexconn product / API |
@@ -38,17 +45,19 @@ For this challenge we added a **Nexconn approval room**:
 | Approval cards and outcome messages (text + structured `extra`) | Platform Chat API `POST /v4/group-channel/message/send` |
 | Approver chat page: connect, live messages, history, Approve / Reject, free chat | **Web Chat SDK** `NCEngine.initialize / connect`, `MessageHandler.onMessageReceived`, `GroupChannel.sendMessage(SendTextMessageParams)`, `BaseChannel.createMessagesQuery` |
 | Decisions back to the guardrail engine | Webhook `message:send`, verified with `sha1(AppSecret + Nonce + Timestamp)` |
+| `/try` playground: every visitor and invited teammate is a real Nexconn user in their own private group | Platform Chat API (token issue, group create / join) + Web Chat SDK in the shared room view |
 
 ## What existed before and what we built for this challenge
 
 *Existing (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at github.com/mubudot/guardrail-buyer):* the guardrail engine, the PayPal Orders v2
 Sandbox integration, the Claude / offline agents, the MCP server and the AG Grid dashboard.
 
-*Built during the Nexconn challenge (new package `app/nexconn/` + `app/static/chat*`):*
+*Built during the Nexconn challenge (new packages `app/nexconn/` and `app/playground/`, `app/static/chat*` and `try*`):*
 the Nexconn server API client (request signing, data-center failover), the webhook receiver (signature, time
 window, single-use nonces), the approval channel (cards, decision handling, approver allowlist, duplicate-safe,
 outbox with retry), the approver chat page on the Web Chat SDK, an offline mock of the room for tests and demos,
-and 70 new automated tests (491 in total). Existing files also got smaller edits: an observer hook on approval events, the wiring for the new routes, an
+the `/try` playground (per-visitor sandboxes, invites, limits, expiry, health checks) and 118 new automated
+tests (539 in total). Existing files also got smaller edits: an observer hook on approval events, the wiring for the new routes, an
 "Approval chat" link and style on the dashboard, configuration examples, the MCP credential scrub, test fixtures and docs;
 later fixes from the PayPal repo were merged in.
 
