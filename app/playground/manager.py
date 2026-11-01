@@ -129,13 +129,24 @@ class PlaygroundManager:
         checks the idle time itself instead of trusting the status alone)."""
         return row is not None and row["status"] == "ACTIVE" and self.clock() - row["last_seen"] <= self.cfg.ttl_s
 
-    def _gone(self, row: dict[str, Any] | None) -> PlaygroundError:
-        if row is not None and row["status"] == "ACTIVE":     # idle past the TTL: expire it now
-            try:
-                self.expire(row["id"], idle_before=self.clock() - self.cfg.ttl_s)
-            except Exception:   # pragma: no cover - the next sweep retries
-                log.exception("playground: expiring %s failed", row["id"])
-        return PlaygroundError(404, "Your sandbox expired. Start a new one.")
+    def _revalidate(self, row: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The live row for `row`, or None when the sandbox is gone.
+
+        A row that looks idle past the TTL may be stale: another request can have used the sandbox
+        after this one read it. So expiry is conditional (re-checked in the registry), and when it
+        declines, the current row is read again and used if it is alive. Only a sandbox that is
+        really expired (or unknown) answers "gone"."""
+        if self._alive(row):
+            return row
+        if row is None or row["status"] != "ACTIVE":
+            return None
+        try:                                                # idle past the TTL: expire it now ...
+            if self.expire(row["id"], idle_before=self.clock() - self.cfg.ttl_s):
+                return None
+        except Exception:   # pragma: no cover - the next sweep retries
+            log.exception("playground: expiring %s failed", row["id"])
+        fresh = self.registry.get(row["id"])                # ... unless it was used meanwhile
+        return fresh if self._alive(fresh) else None
 
     def invite_url(self, sandbox_id: str) -> str:
         return f"{self.cfg.public_base_url}/try/join/{self.registry.invite_code(sandbox_id)}"
@@ -168,9 +179,9 @@ class PlaygroundManager:
     def use(self, sid: str) -> Iterator[Sandbox]:
         if self.closed:
             raise PlaygroundError(503, "The playground is shutting down; try again in a few seconds.")
-        row = self.registry.get(sid)
-        if not self._alive(row):          # checked before any per-sandbox state (lock, cache) is created
-            raise self._gone(row)
+        row = self._revalidate(self.registry.get(sid))   # before any per-sandbox state (lock, cache)
+        if row is None:
+            raise PlaygroundError(404, "Your sandbox expired. Start a new one.")
         with self._lock:
             sb = self._cache.get(sid)
             if sb is not None:
@@ -237,8 +248,9 @@ class PlaygroundManager:
         if found is None:
             raise PlaygroundError(401, "Unknown sandbox session. Start a new sandbox.")
         row, member = found
-        if not self._alive(row):          # before touch(), so an idle session cannot revive its sandbox
-            raise self._gone(row)
+        row = self._revalidate(row)       # before touch(), so an idle session cannot revive its sandbox
+        if row is None:
+            raise PlaygroundError(404, "Your sandbox expired. Start a new one.")
         self.registry.touch(row["id"])
         return row, member
 
@@ -288,9 +300,8 @@ class PlaygroundManager:
         self.sweep()
         self._limit(self.join_limiter, ip, "joins")
         row = self.registry.by_invite(code) if isinstance(code, str) and 0 < len(code) <= 128 else None
-        if not self._alive(row):
-            if row is not None:
-                self._gone(row)
+        row = self._revalidate(row)
+        if row is None:
             raise PlaygroundError(404, "This invite link is unknown or its sandbox expired.")
         sid = row["id"]
         if self.registry.member_count(sid) >= self.cfg.max_members:
@@ -394,9 +405,8 @@ class PlaygroundManager:
         """A message from a playground room (signed webhook in live mode, or the mock transport)."""
         gid = item.get("channelId")
         row = self.registry.by_group(gid) if isinstance(gid, str) else None
-        if not self._alive(row):
-            if row is not None:
-                self._gone(row)
+        row = self._revalidate(row)
+        if row is None:
             return {"result": "IGNORED", "why": "unknown or expired sandbox room"}
         try:
             with self.use(row["id"]) as sb:
@@ -411,9 +421,8 @@ class PlaygroundManager:
         with self.registry.lock:
             m = self.registry.conn.execute("SELECT sandbox_id FROM members WHERE user_id=?", (uid,)).fetchone()
         row = self.registry.get(m["sandbox_id"]) if m else None
-        if not self._alive(row) or row["chat_mode"] != "mock":
-            if row is not None and row["status"] == "ACTIVE" and row["chat_mode"] == "mock":
-                self._gone(row)
+        row = self._revalidate(row) if row is not None and row["chat_mode"] == "mock" else None
+        if row is None:
             raise PlaygroundError(401, "Room session expired; reconnecting.")
         return row, uid
 

@@ -416,7 +416,7 @@ def test_expiry_from_a_stale_check_never_deletes_a_sandbox_that_was_just_used(se
     stale = pg.registry.get(sid)
     with pg.registry.tx() as x:      # ... but another request has used the sandbox since
         x.execute("UPDATE sandboxes SET last_seen=? WHERE id=?", (pg.clock(), sid))
-    pg._gone(stale)                  # the slow request's expiry attempt
+    assert pg._revalidate(stale)["id"] == sid   # the slow request's check: alive after all, kept
     assert pg.sweep(force=True) == []
     assert pg.registry.get(sid)["status"] == "ACTIVE"
     assert (tmp_path / "try" / f"{sid}.db").exists()
@@ -439,3 +439,81 @@ def test_a_full_room_affects_only_itself_and_keeps_slots_for_the_bot(service, mo
     assert c.post("/try/mock/send", headers=tb, json={"text": "hi"}).status_code == 200    # other room unaffected
     r = c.post("/try/agent", headers=H(a), json={"request": "buy the USB-C hub"})          # bot posts still fit
     assert r.status_code == 200
+
+
+# ---- Codex cross-review R3 P3 (2026-11-01): a stale check answers with the live row, not 404 -------------
+def _stale_then_fresh(pg, sid):
+    """Make the sandbox look idle past the TTL in a row read now, then mark it used again (what a slow
+    request sees when another request refreshed the sandbox in between). Returns the stale row."""
+    with pg.registry.tx() as x:
+        x.execute("UPDATE sandboxes SET last_seen=last_seen-? WHERE id=?", (25 * 3600, sid))
+    stale = pg.registry.get(sid)
+    with pg.registry.tx() as x:
+        x.execute("UPDATE sandboxes SET last_seen=? WHERE id=?", (pg.clock(), sid))
+    return stale
+
+
+def test_a_stale_session_read_does_not_answer_404_for_a_live_sandbox(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    s = start(c)
+    pg = c.app.state.playground
+    sid = s["sandbox_id"]
+    stale = _stale_then_fresh(pg, sid)
+    real = pg.registry.by_session
+    calls = []
+
+    def slow_by_session(secret):          # this request read the session row before the refresh
+        found = real(secret)
+        if found is not None and not calls:
+            calls.append(1)
+            return stale, found[1]
+        return found
+    monkeypatch.setattr(pg.registry, "by_session", slow_by_session)
+    r = c.get("/try/state", headers=H(s))
+    assert calls and r.status_code == 200, r.text
+    assert r.json()["you"]["name"] == "Ada"
+    assert pg.registry.get(sid)["status"] == "ACTIVE" and (tmp_path / "try" / f"{sid}.db").exists()
+    assert c.post("/try/session", headers=H(s)).status_code == 200      # the browser secret stays valid
+
+
+def test_a_stale_row_in_use_invite_and_room_paths_keeps_the_live_sandbox(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    s = start(c)
+    chat, _ = room(c, s)
+    pg = c.app.state.playground
+    sid = s["sandbox_id"]
+    for path in ("get", "by_invite", "by_group"):
+        stale = _stale_then_fresh(pg, sid)
+        real = getattr(pg.registry, path)
+        once = []
+
+        def stale_once(*a, _real=real, _stale=stale, _once=once):
+            if not _once:
+                _once.append(1)
+                return _stale
+            return _real(*a)
+        monkeypatch.setattr(pg.registry, path, stale_once)
+        if path == "get":
+            with pg.use(sid) as sb:
+                assert sb.id == sid
+        elif path == "by_invite":
+            code = s["invite_url"].rsplit("/", 1)[1]
+            r = c.post("/try/join", json={"code": code, "name": "Bo"})
+            assert r.status_code == 200, r.text
+        else:
+            out = pg.handle_message({"channelId": stale["group_id"], "fromUserId": chat["user_id"],
+                                     "content": json.dumps({"text": "hello"})}, "mock")
+            assert out.get("why") != "unknown or expired sandbox room", out
+        monkeypatch.setattr(pg.registry, path, real)
+        assert once and pg.registry.get(sid)["status"] == "ACTIVE"
+
+
+def test_a_sandbox_that_is_really_idle_still_expires_on_access(service, monkeypatch, tmp_path):
+    c = make(service, monkeypatch, tmp_path)
+    s = start(c)
+    pg = c.app.state.playground
+    with pg.registry.tx() as x:
+        x.execute("UPDATE sandboxes SET last_seen=last_seen-? WHERE id=?", (25 * 3600, s["sandbox_id"]))
+    assert pg._revalidate(pg.registry.get(s["sandbox_id"])) is None
+    assert pg.registry.get(s["sandbox_id"])["status"] == "EXPIRED"
+    assert c.get("/try/state", headers=H(s)).status_code == 404
