@@ -44,6 +44,8 @@ class NexconnConfig:
     sdk_base: str = DEFAULT_SDK_BASE
     webhook_max_skew_s: int = 300
     public_base_url: str = ""
+    fallback: str = "auto"
+    probe_every_s: int = 60
 
     @property
     def enabled(self) -> bool:
@@ -82,11 +84,17 @@ class NexconnConfig:
             sdk_base=(e.get("NEXCONN_SDK_BASE") or DEFAULT_SDK_BASE).strip().rstrip("/"),
             webhook_max_skew_s=_int(e.get("NEXCONN_WEBHOOK_MAX_SKEW_S"), 300, "NEXCONN_WEBHOOK_MAX_SKEW_S"),
             public_base_url=(e.get("PUBLIC_BASE_URL") or "").strip().rstrip("/"),
+            fallback=(e.get("NEXCONN_FALLBACK") or "auto").strip().lower(),
+            probe_every_s=_int(e.get("NEXCONN_PROBE_EVERY_S"), 60, "NEXCONN_PROBE_EVERY_S"),
         )
         cfg.validate()
         return cfg
 
     def validate(self) -> None:
+        if self.fallback not in ("auto", "off", "force"):
+            raise NexconnConfigError("NEXCONN_FALLBACK: use auto, off or force")
+        if self.probe_every_s < 1:
+            raise NexconnConfigError("NEXCONN_PROBE_EVERY_S: use a positive whole number of seconds")
         if not self.enabled:
             return
         for name, value in (("NEXCONN_GROUP_ID", self.group_id), ("NEXCONN_BOT_USER_ID", self.bot_user_id)):

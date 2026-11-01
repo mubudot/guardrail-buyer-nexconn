@@ -29,6 +29,7 @@ from .nexconn import NexconnConfig, NexconnConfigError, build_channel, relay_ena
 from .nexconn.routes import build_router as build_nexconn_router  # noqa: E402
 from .checkout import mock_checkout_page  # noqa: E402
 from .nexconn.client import MockNexconn  # noqa: E402
+from .nexconn.fallback import configure_fallback  # noqa: E402
 from .playground import PlaygroundConfig, PlaygroundManager  # noqa: E402
 from .playground.routes import build_router as build_try_router  # noqa: E402
 from .stability import build_health_router, install_error_handler  # noqa: E402
@@ -145,6 +146,7 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     chat = build_channel(svc, nexconn_cfg) if nexconn == "env" else nexconn
     app.state.nexconn = chat
     if chat is not None:
+        configure_fallback(chat)
         def route_item(item, source):   # playground rooms are routed to their own sandbox
             pg = app.state.playground
             if pg is not None and pg.owns(item):
@@ -162,7 +164,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     playground = None
     if try_cfg.enabled:
         playground = PlaygroundManager(
-            try_cfg, chat.cfg, live_client=chat.client if chat.cfg.mode == "live" else None,
+            try_cfg, chat.cfg, live_client=chat.transport.live if chat.transport else None,
+            upstream=chat.transport.upstream if chat.transport else None,
             mock_client=MockNexconn(), catalog=svc.catalog,
             policy=Policy.load(os.environ.get("POLICY_PATH", ROOT / "policy.yaml")))
         app.include_router(build_try_router(playground, STATIC))
@@ -187,7 +190,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                 "agent_rate_limit": f"{limiter.limit}/{limiter.per:g}s" if limiter else None,
                 "tools_rate_limit": f"{tools_limiter.limit}/{tools_limiter.per:g}s" if tools_limiter else None,
                 "instance": os.environ.get("GRB_INSTANCE"),
-                "nexconn": ({**chat.cfg.public(), "ready": chat.ready} if chat is not None else {"mode": "off"}),
+                "nexconn": ({**chat.public_config(), "mode": chat.cfg.mode, "ready": chat.ready}
+                            if chat is not None else {"mode": "off"}),
                 "playground": playground.health() if playground is not None else {"mode": "off"}}
 
     @app.get("/policy")

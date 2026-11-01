@@ -7,7 +7,7 @@
   border-radius: var(--radius-sm); background: #fff; min-width: 200px; }
 .error { color: var(--bad); margin: 10px 0 0; }
 .try-link { margin: 12px 0 0; }
-.room { display: grid; grid-template-rows: auto auto 1fr auto; height: calc(100vh - 140px); min-height: 420px; padding: 0; }
+.room { display: grid; grid-template-rows: auto auto auto minmax(80px, 1fr) auto; height: calc(100vh - 140px); min-height: 420px; padding: 0; min-width: 0; }
 .room-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap;
   padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .messages { list-style: none; margin: 0; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column;
@@ -27,8 +27,15 @@
 .card-state.tone-ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-line); }
 .card-state.tone-bad { background: var(--bad-bg); color: var(--bad); border-color: var(--bad-line); }
 .card-actions { display: flex; gap: 8px; margin-top: 8px; }
-.room > .room-head { grid-row: 1; } .room > .older-pending { grid-row: 2; }
-.room > .messages { grid-row: 3; } .room > .composer { grid-row: 4; }
+.room > .offline-banner { grid-row: 1; }
+.room > .room-head { grid-row: 2; } .room > .older-pending { grid-row: 3; }
+.room > .messages { grid-row: 4; } .room > .composer { grid-row: 5; }
+.offline-banner { padding: 12px 16px; background: var(--warn-bg); color: var(--warn);
+  border-left: 4px solid var(--warn); font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+.offline-banner p { margin: 6px 0 0; }
+.offline-banner a { color: #684000; text-decoration: underline; }
+.offline-banner .offline-reason { font-size: 12px; color: #655238; }
+.offline-recovered .btn { margin: 6px 0 0 4px; max-width: 100%; white-space: normal; }
 .older-pending { display: grid; align-content: start; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--line);
   background: var(--warn-bg); max-height: 40vh; overflow-y: auto; }
 .older-item { background: var(--surface, #fff); border: 1px solid var(--line); border-left: 4px solid var(--warn);

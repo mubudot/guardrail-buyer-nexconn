@@ -181,7 +181,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 536 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 526 passed, 13 skipped)
+python -m pytest -q                                     # -> 586 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 575 passed, 14 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -294,7 +294,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `536 passed, 3 skipped` (539 tests, 118 of them for the Nexconn chat channel and the `/try` playground; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` ten more node-only tests are skipped: `526 passed, 13 skipped`).
+1. **Run the tests** — `python -m pytest -q` → see `586 passed, 3 skipped` (589 tests, 168 of them for the Nexconn chat channel and the `/try` playground; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` eleven more node-only tests are skipped: `575 passed, 14 skipped`).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -409,6 +409,24 @@ the dashboard's audit log). Posting is best effort and at least once: if Nexconn
 unaffected, the post is kept as `FAILED`, retried automatically (up to 5 times) and by `POST /nexconn/retry`; a
 decision whose handler crashed is finished on the next start or recovery pass.
 
+### If Nexconn is unreachable
+
+In `NEXCONN_MODE=live`, `NEXCONN_FALLBACK=auto` (default) switches `/try` and `/chat` to a labelled
+offline room when credentials/plan access are declined, or after two consecutive transport/server
+failures. Only chat transport is replaced: guardrails, approval claims and hard-rule rechecks, spending
+limits, audit logs, and simulated payments still run for real. `/chat` keeps its approver-token checks.
+`NEXCONN_FALLBACK=off` preserves the old failure behavior; `force` always uses the stand-in without
+calling Nexconn. `NEXCONN_PROBE_EVERY_S=60` bounds lazy recovery probes triggered by state/config/health
+requests. SDK connection failures can request a globally limited server probe; `/try` members can
+also downgrade their own sandbox without changing the site's upstream state.
+
+After recovery, new sandboxes and the main room use live Nexconn. Fallen-back sandboxes stay on the
+stand-in and offer **Start a new live sandbox**; `/chat` offers **Reconnect**. `/health` includes
+`nexconn.upstream` (`state`, safe `reason`, `since`, `last_probe_at`, `fallback`), `nexconn.effective_mode`,
+and `playground.new_sandboxes`. `/health/ready` stays 200 while serving the working stand-in, reporting
+`checks.nexconn=true` and `nexconn_mode="offline-fallback"`. See [the playground notes](docs/PLAYGROUND.md#if-nexconn-is-unreachable)
+for persistence and recovery details.
+
 ### Try it (no token needed)
 
 `/try` is a self-serve playground for visitors (`TRY_MODE=on`; off by default, needs `NEXCONN_MODE=mock`
@@ -469,7 +487,7 @@ read well in any Nexconn client. The mock does not emulate Nexconn beyond what t
 | | What | Where |
 |---|---|---|
 | **Existed before** (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer)) | guardrail policy engine, PayPal Orders v2 Sandbox integration, Claude and offline agents, MCP server, AG Grid dashboard | the rest of the code base |
-| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, the `/try` playground, 118 new tests | `app/nexconn/`, `app/playground/`, `app/static/chat.html`, `chat.js`, `chat-room.js`, `chat-transport.js`, `chat-reconcile.js`, `chat.css`, `try.*`, `tests/test_nexconn_*.py`, `tests/test_playground*.py`, `tests/test_try_js.py`; small edits to existing files: an observer hook on approval events (`app/service.py`), wiring of the channel and routes (`app/main.py`), an "Approval chat" link and style on the dashboard, `NEXCONN_*` in `.env.example`, `NEXCONN_APP_SECRET` added to the MCP credential scrub, test fixtures, docs and counts |
+| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, the `/try` playground, automatic offline fallback, 168 new tests | `app/nexconn/`, `app/playground/`, `app/static/chat.html`, `chat.js`, `chat-room.js`, `chat-transport.js`, `chat-reconcile.js`, `chat.css`, `try.*`, `tests/test_nexconn_*.py`, `tests/test_playground*.py`, `tests/test_try_js.py`, `tests/test_offline*.py`; small edits to existing files: an observer hook on approval events (`app/service.py`), wiring of the channel and routes (`app/main.py`), an "Approval chat" link and style on the dashboard, `NEXCONN_*` in `.env.example`, `NEXCONN_APP_SECRET` added to the MCP credential scrub, test fixtures, docs and counts |
 
 The git history shows the split: commits up to `25627cc` are the PayPal version (identical to the public
 PayPal repo); the Nexconn work starts at the commit "Nexconn chat approval channel". Later fixes from the

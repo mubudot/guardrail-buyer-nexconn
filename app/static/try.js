@@ -5,6 +5,8 @@ import {createTransport} from "/static/chat-transport.js";
 import {createRoom, el} from "/static/chat-room.js";
 import {describeResponse, friendlyError} from "/static/friendly-errors.js";
 import {dailyProgress, money, parseLocation, safePayUrl, stepView} from "/static/try-model.js";
+import {OFFLINE_TOOLTIP, offlineView, watchSdk} from "/static/offline-model.js";
+import {updateOfflineNotice} from "/static/offline-notice.js";
 
 const $ = (id) => document.getElementById(id);
 const KEY = "grbTrySession";
@@ -14,6 +16,7 @@ const state = {secret: localStorage.getItem(KEY) || "", sandbox: null, session: 
                names: new Map(), poll: null};
 const loc = parseLocation(location.pathname, location.search);
 let roomStarting = null, roomGen = 0;   // the pending room start (shared by concurrent callers), room generation
+let sdkWatch = null, sdkFallbackPending = false;
 
 const room = createRoom({
   list: $("messages"), older: $("older-pending"), session: () => state.session, names: state.names,
@@ -34,6 +37,7 @@ function toast(msg, tone = "") {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 6000);
 }
 function setConn(s) {
+  sdkWatch?.status(s);
   const c = $("conn"); c.hidden = false;
   const ok = s === "connected";   // exact: "disconnected" must not read as connected
   c.textContent = ok ? "Connected" : `Connection: ${s}`;
@@ -47,8 +51,14 @@ function setChatMode(mode) {
   const live = mode === "live";
   m.textContent = live ? `Nexconn live · ${state.session?.area || "SG"}` : "Offline stand-in";
   m.className = `chip ${live ? "env-sandbox" : "offline"}`;
-  m.title = live ? "Your own user and room on Nexconn (Web Chat SDK)" : "In-process stand-in for Nexconn: no account, no network";
-  $("fallback-note").hidden = !state.sandbox?.chat_fallback;
+  const upstream = offlineView(state.sandbox).visible;
+  m.title = live ? "Your own user and room on Nexconn (Web Chat SDK)" : upstream ? OFFLINE_TOOLTIP :
+    "In-process stand-in for Nexconn: no account, no network";
+  $("fallback-note").hidden = !(state.sandbox?.chat_fallback && state.sandbox?.fallback?.reason === "capacity");
+  updateOfflineNotice($("offline-banner"), state.sandbox);
+  $("try-sub").textContent = `Your own sandbox · ${live ? "real Nexconn chat" : "offline chat stand-in"} · simulated PayPal`;
+  $("invite-hint").textContent = live ? "They open the link, get their own Nexconn user and join this room as a second approver."
+    : "They open the link and join this room as a second approver.";
 }
 async function api(path, {method = "GET", body, context = "session"} = {}) {
   let r;
@@ -121,6 +131,7 @@ async function refresh(first = false) {
       if (seq !== refreshSeq) return null;   // the sandbox changed meanwhile (expired / new one): ignore
       state.sandbox = s;
       render(s);
+      if (state.session && state.session.mode !== s.chat_mode) restartRoom();
       return s;
     } catch (e) {
       if (seq !== refreshSeq) return null;
@@ -141,6 +152,7 @@ function expired(msg) {
   clearInterval(state.poll);
   refreshSeq++; refreshing = null;   // an in-flight /try/state of this sandbox no longer counts
   roomGen++; roomStarting = null;     // nor an in-flight room start
+  sdkWatch?.stop(); sdkWatch = null;
   try { state.transport?.stop(); } catch { /* already stopped */ }
   state.transport = null; state.session = null; state.secret = "";
   localStorage.removeItem(KEY);
@@ -151,6 +163,7 @@ function expired(msg) {
 }
 
 function render(s) {
+  setChatMode(s.chat_mode);
   for (const m of s.members) state.names.set(m.user_id, m.name);
   $("room-name").textContent = `Approval room · ${s.name}`;
   $("room-who").textContent = `${s.members.length} member${s.members.length === 1 ? "" : "s"} · you are ${s.you.name}`;
@@ -225,16 +238,20 @@ function startRoom() {
       if (stale()) return;
       state.session = session;
       setChatMode(session.mode);
+      sdkWatch?.stop();
+      sdkWatch = session.mode === "live" ? watchSdk(() => fallbackForSdk()) : null;
       const transport = await createTransport(session, {mockBase: "/try/mock"});
-      if (stale()) return;
+      if (stale()) { transport.stop(); return; }
       state.transport = transport;
-      await transport.start(room.onMessages, setConn);
+      await transport.start((messages) => { if (!stale()) room.onMessages(messages); },
+                            (status) => { if (!stale()) setConn(status); });
       if (stale()) { transport.stop(); return; }
       await room.syncApprovals();
       refresh();
     } catch (e) {
       if (stale()) return;
       if (e.status === 404 || e.status === 401) { expired(e.message); return; }
+      sdkWatch?.fail();
       setConn("not connected");
       toast(e.status ? e.message : friendlyError({status: 502}), "bad");
     }
@@ -244,10 +261,25 @@ function startRoom() {
 }
 
 async function restartRoom() {
+  roomGen++; roomStarting = null;
+  sdkWatch?.stop(); sdkWatch = null;
   try { state.transport?.stop(); } catch { /* already stopped */ }
-  state.transport = null;
+  state.transport = null; state.session = null;
   room.clear();
   await startRoom();
+}
+
+async function fallbackForSdk() {
+  if (sdkFallbackPending) return;
+  const gen = roomGen, secret = state.secret;
+  sdkFallbackPending = true;
+  try {
+    const s = await api("/try/sdk-failed", {method: "POST"});
+    if (gen !== roomGen || secret !== state.secret) return;
+    state.sandbox = s; render(s);
+    if (s.chat_mode === "mock") await restartRoom();
+  } catch (e) { toast(e.message, "bad"); }
+  finally { sdkFallbackPending = false; }
 }
 
 async function send(text, extra) {
@@ -269,6 +301,11 @@ function returnToast() {
 }
 
 function wire() {
+  $("new-live-btn").addEventListener("click", () => {
+    if (!window.confirm("Leave this sandbox and start a new live sandbox? Your teammates stay in this sandbox.")) return;
+    expired(""); loc.invite = false;
+    $("start-form").requestSubmit();
+  });
   $("start-form").addEventListener("submit", start);
   document.querySelectorAll(".try-chip").forEach((b) => b.addEventListener("click", () => ask(b.dataset.ask)));
   $("ask-form").addEventListener("submit", (ev) => { ev.preventDefault(); ask($("ask").value); });

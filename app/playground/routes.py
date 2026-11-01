@@ -5,6 +5,7 @@
     POST /try/join                 {code, name?} -> join a sandbox as a teammate (second approver)
     GET  /try/state                X-Try-Session: the sandbox (members, limits, approvals, orders, steps)
     POST /try/session              X-Try-Session: Chat SDK session for this member (no new registration)
+    POST /try/sdk-failed           X-Try-Session: bounded probe and downgrade of this sandbox only
     POST /try/agent                X-Try-Session: {request} -> the rule-based offline agent's answer
     POST /try/reset                X-Try-Session (owner): clear orders, approvals and spend
     GET  /try/mock/messages        offline stand-in room (X-Nexconn-Token), same contract as /nexconn/mock/*
@@ -84,6 +85,10 @@ def build_router(manager: PlaygroundManager, static_dir) -> APIRouter:
     @r.post("/try/session")
     async def session(x_try_session: str | None = Header(default=None)):
         return await call(manager.session, x_try_session)
+
+    @r.post("/try/sdk-failed")
+    async def sdk_failed(x_try_session: str | None = Header(default=None)):
+        return await call(manager.fallback.sdk_failed, x_try_session)
 
     @r.post("/try/agent")
     async def agent(body: TryAgentBody, request: Request, x_try_session: str | None = Header(default=None)):

@@ -45,6 +45,7 @@ def build_health_router(svc, chat=None, playground=None) -> APIRouter:
         except Exception:
             checks["database"] = False
         if chat is not None:
+            chat.refresh_transport(probe=True)
             checks["nexconn"] = bool(chat.ready)
         if playground is not None:
             try:
@@ -53,6 +54,8 @@ def build_health_router(svc, chat=None, playground=None) -> APIRouter:
                 checks["playground"] = False
         failed = [k for k, ok in checks.items() if not ok]
         body = {"ok": not failed, "checks": checks, **({"failed": failed} if failed else {})}
+        if chat is not None and chat.transport is not None and chat.transport.mode == "mock":
+            body["nexconn_mode"] = "offline-fallback"
         return JSONResponse(body, status_code=503 if failed else 200)
 
     return r

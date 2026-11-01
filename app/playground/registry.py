@@ -55,6 +55,12 @@ class Registry:
         with self.tx() as c:
             for stmt in _SCHEMA:
                 c.execute(stmt)
+            # VPS registries predate fallback metadata. Check each column in the same write
+            # transaction so opening the old DB (or opening it again) is safe.
+            columns = {r[1] for r in c.execute("PRAGMA table_info(sandboxes)")}
+            for name in ("fallback_reason", "fallback_since", "fallback_detail"):
+                if name not in columns:
+                    c.execute(f"ALTER TABLE sandboxes ADD COLUMN {name} TEXT")
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('invite_key', ?)", (secrets.token_hex(32),))
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('live_users_registered', '0')")
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('sandboxes_created', '0')")
@@ -114,20 +120,29 @@ class Registry:
             return self.conn.execute("SELECT COUNT(*) FROM sandboxes WHERE status='ACTIVE'").fetchone()[0]
 
     def create(self, sandbox_id: str, group_id: str, name: str, chat_mode: str, owner: dict[str, str],
-               session_secret: str, max_active: int) -> bool:
+               session_secret: str, max_active: int, *, fallback_reason: str | None = None,
+               fallback_since: str | None = None, fallback_detail: str | None = None) -> bool:
         """Insert the sandbox and its owner; False (nothing written) when max_active is reached."""
         now = self.clock()
         with self.tx() as c:
             if c.execute("SELECT COUNT(*) FROM sandboxes WHERE status='ACTIVE'").fetchone()[0] >= max_active:
                 return False
             c.execute("INSERT INTO sandboxes (id, group_id, name, chat_mode, invite_hash, status, created_at, "
-                      "last_seen) VALUES (?,?,?,?,?, 'ACTIVE', ?, ?)",
-                      (sandbox_id, group_id, name, chat_mode, digest(self.invite_code(sandbox_id)), now, now))
+                      "last_seen, fallback_reason, fallback_since, fallback_detail) "
+                      "VALUES (?,?,?,?,?, 'ACTIVE', ?, ?, ?, ?, ?)",
+                      (sandbox_id, group_id, name, chat_mode, digest(self.invite_code(sandbox_id)), now, now,
+                       fallback_reason, fallback_since, fallback_detail))
             c.execute("INSERT INTO members (user_id, sandbox_id, name, role, session_hash, joined_at) "
                       "VALUES (?,?,?, 'owner', ?, ?)", (owner["user_id"], sandbox_id, owner["name"],
                                                         digest(session_secret), now))
             c.execute("UPDATE meta SET value=CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='sandboxes_created'")
         return True
+
+    def fall_back(self, sandbox_id: str, since: str, detail: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE sandboxes SET chat_mode='mock', group_ready=0, fallback_reason='upstream', "
+                      "fallback_since=?, fallback_detail=? WHERE id=? AND chat_mode='live' AND status='ACTIVE'",
+                      (since, detail, sandbox_id))
 
     def get(self, sandbox_id: str) -> dict[str, Any] | None:
         with self.lock:

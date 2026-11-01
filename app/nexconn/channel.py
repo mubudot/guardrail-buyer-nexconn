@@ -80,11 +80,13 @@ class ChatApprovalChannel:
             raise ValueError("dispatch must be 'thread' or 'inline'")
         self.svc, self.cfg, self.client = svc, cfg, client
         self.dispatch = dispatch
+        self.transport = None       # application wiring installs the shared upstream monitor
+        self._transport_lock = threading.RLock()
         self.ready = False
         self.last_error: str | None = None
         self._q: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
-        self._boot_lock = threading.Lock()
+        self._boot_lock = threading.RLock()
         self._worker_lock = threading.Lock()
         self._clock = time.time
         with svc.store.tx() as c:
@@ -93,10 +95,19 @@ class ChatApprovalChannel:
         svc.add_approval_listener(self._on_approval)
 
     # ---- setup ----------------------------------------------------------------
+    def refresh_transport(self, *, probe: bool = False) -> bool:
+        with self._transport_lock:
+            return self.transport.sync(probe=probe) if self.transport is not None else False
+
+    def public_config(self) -> dict[str, Any]:
+        return self.transport.public() if self.transport is not None else {
+            **self.cfg.public(), "effective_mode": self.cfg.mode}
+
     def bootstrap(self) -> bool:
         """Register the bot and approvers and make sure the approval group exists with all of
         them in it. Safe to call again; failures are kept in last_error and retried lazily."""
-        with self._boot_lock:
+        with self._transport_lock, self._boot_lock:
+            self.refresh_transport()
             if self.ready:
                 return True
             try:
@@ -108,6 +119,8 @@ class ChatApprovalChannel:
             except NexconnError as e:
                 self.last_error = f"bootstrap: {e}"
                 log.warning("Nexconn bootstrap failed: %s", e)
+                if self.refresh_transport():
+                    return self.bootstrap()
                 return False
             self.ready, self.last_error = True, None
             return True
@@ -163,13 +176,46 @@ class ChatApprovalChannel:
         uid = user_id or self.cfg.approver_ids[0]
         if uid not in self.cfg.approver_ids:
             raise PermissionError(f"{uid} is not in NEXCONN_APPROVER_IDS")
-        self.bootstrap()
-        token = self.client.issue_token(uid, uid)
-        return {"mode": self.cfg.mode, "app_key": self.cfg.app_key if self.cfg.mode == "live" else "",
+        with self._transport_lock:
+            self.refresh_transport(probe=True)
+            self.bootstrap()
+            try:
+                token = self.client.issue_token(uid, uid)
+            except NexconnError:
+                if not self.refresh_transport():
+                    raise
+                self.bootstrap()
+                token = self.client.issue_token(uid, uid)
+            mode = self.transport.mode if self.transport is not None else self.cfg.mode
+        return {"mode": mode, "app_key": self.cfg.app_key if mode == "live" else "",
                 "area": self.cfg.area, "token": token, "user_id": uid, "group_id": self.cfg.group_id,
                 "bot_user_id": self.cfg.bot_user_id, "approver_ids": list(self.cfg.approver_ids)}
 
     # ---- outbound ---------------------------------------------------------------
+    def restore_pending(self, *, carried: bool = True) -> None:
+        """Rebuild cards from committed approvals; decisions still use handle_message unchanged.
+
+        Queued/failed cards are retried instead. A SENDING claim may belong to a dead process:
+        rebuild its card now, leaving that claim intact for normal at-least-once recovery.
+        """
+        self.svc.expire_stale()
+        with self.svc.store.lock:
+            rows = [dict(r) for r in self.svc.store.conn.execute(
+                "SELECT a.* FROM approvals a WHERE a.status='PENDING' AND NOT EXISTS "
+                "(SELECT 1 FROM nexconn_posts p WHERE p.approval_id=a.id AND p.kind='request' "
+                "AND p.status IN ('QUEUED','FAILED'))").fetchall()]
+        if carried:
+            with self.svc.store.tx() as c:
+                c.execute("UPDATE nexconn_posts SET text=text || ? WHERE kind='request' AND "
+                          "status IN ('QUEUED','FAILED') AND approval_id IN "
+                          "(SELECT id FROM approvals WHERE status='PENDING') AND text NOT LIKE ?",
+                          ("\nCarried over to the offline stand-in.", "%Carried over to the offline stand-in.%"))
+        for approval in rows:
+            text, extra = request_card(approval)
+            if carried:
+                text += "\nCarried over to the offline stand-in."
+            self._enqueue(approval["id"], "request", text, extra)
+
     def _on_approval(self, event: str, approval: dict[str, Any] | None, result: dict[str, Any]) -> None:
         if not approval:
             return
@@ -236,6 +282,11 @@ class ChatApprovalChannel:
         return done.wait(timeout)
 
     def _send(self, post_id: int) -> None:
+        with self._transport_lock:
+            self.refresh_transport()
+            self._send_current(post_id)
+
+    def _send_current(self, post_id: int) -> None:
         st = self.svc.store
         now = self._clock()
         with st.tx() as c:   # claim: only one worker / process sends a given post
@@ -252,12 +303,28 @@ class ChatApprovalChannel:
             mid = self.client.send_group_text(self.cfg.bot_user_id, self.cfg.group_id, row["text"],
                                               json.loads(row["extra"]))
         except NexconnError as e:
+            if self.refresh_transport() and self.bootstrap():
+                # The failed live send remains claimed by us; finish it on the stand-in now.
+                try:
+                    text = row["text"]
+                    if row["kind"] == "request" and self.transport is not None and self.transport.mode == "mock":
+                        text += "\nCarried over to the offline stand-in."
+                    mid = self.client.send_group_text(self.cfg.bot_user_id, self.cfg.group_id,
+                                                      text, json.loads(row["extra"]))
+                except NexconnError as retry_error:
+                    e = retry_error
+                else:
+                    self._mark_sent(post_id, mid)
+                    return
             with st.tx() as c:
                 c.execute("UPDATE nexconn_posts SET status='FAILED', error=?, attempts=attempts+1 WHERE id=?",
                           (str(e)[:300], post_id))
             log.warning("Nexconn post %s (%s) failed: %s", post_id, row["kind"], e)
             return
-        with st.tx() as c:
+        self._mark_sent(post_id, mid)
+
+    def _mark_sent(self, post_id: int, mid: str) -> None:
+        with self.svc.store.tx() as c:
             c.execute("UPDATE nexconn_posts SET status='SENT', message_id=?, error=NULL, attempts=attempts+1, "
                       "sent_at=? WHERE id=?", (mid, _now(), post_id))
 

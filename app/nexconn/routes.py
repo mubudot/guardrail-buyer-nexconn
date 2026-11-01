@@ -2,6 +2,7 @@
 
     GET  /chat                     the approver's chat page (Nexconn Web Chat SDK, or the mock)
     GET  /nexconn/config           public settings for the page (never the App Secret)
+    POST /nexconn/probe            globally bounded API probe after a browser SDK failure
     POST /nexconn/session          approver token -> Chat SDK access token for one approver
     POST /nexconn/webhook          live: signed Nexconn `message:send` deliveries (decisions)
     POST /nexconn/relay            live + NEXCONN_RELAY=1: the page forwards a decision it sent
@@ -64,7 +65,15 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
 
     @r.get("/nexconn/config")
     def config():
-        return {**cfg.public(), "relay": relay, "app_key": cfg.app_key if cfg.mode == "live" else ""}
+        public = channel.public_config()
+        return {**public, "relay": relay, "app_key": cfg.app_key if public["mode"] == "live" else ""}
+
+    @r.post("/nexconn/probe")
+    def probe():
+        # A browser SDK failure is only a hint. Only a real, globally bounded API probe can
+        # change upstream state; caller-provided errors never count as upstream observations.
+        probed = channel.transport.upstream.maybe_probe(sdk_hint=True) if channel.transport else False
+        return {**config(), "probed": probed}
 
     @r.get("/nexconn/sdk/{name}.mjs", include_in_schema=False)
     def sdk(name: str):
@@ -127,28 +136,31 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
             raise HTTPException(409, "this decision is being processed; retry later")
 
     # ---- mock transport (offline demo and tests) ---------------------------------
-    def mock_user(x_nexconn_token: str | None) -> str:
-        if not isinstance(channel.client, MockNexconn):
-            raise HTTPException(404, "mock transport only exists in NEXCONN_MODE=mock")
-        uid = channel.client.user_for_token(x_nexconn_token or "")
-        if uid is None:
-            raise HTTPException(401, "mock session token required (X-Nexconn-Token)")
-        return uid
+    def mock_user(x_nexconn_token: str | None) -> tuple[str, MockNexconn]:
+        with channel._transport_lock:
+            channel.refresh_transport()
+            client = channel.client
+            if not isinstance(client, MockNexconn):
+                raise HTTPException(404, "mock transport only exists in NEXCONN_MODE=mock")
+            uid = client.user_for_token(x_nexconn_token or "")
+            if uid is None:
+                raise HTTPException(401, "mock session token required (X-Nexconn-Token)")
+            return uid, client
 
     @r.get("/nexconn/mock/messages")
     def mock_messages(after: int = 0, x_nexconn_token: str | None = Header(default=None)):
-        mock_user(x_nexconn_token)
+        _, client = mock_user(x_nexconn_token)
         after = max(0, min(after, 1_000_000))
-        msgs = channel.client.history(cfg.group_id, after)
+        msgs = client.history(cfg.group_id, after)
         return {"messages": msgs, "next": after + len(msgs)}
 
     @r.post("/nexconn/mock/send")
     def mock_send(body: SendBody, x_nexconn_token: str | None = Header(default=None)):
-        uid = mock_user(x_nexconn_token)
+        uid, client = mock_user(x_nexconn_token)
         channel.bootstrap()
         extra = _clean_extra(body.extra)
         try:
-            mid = channel.client.send_group_text(uid, cfg.group_id, body.text, extra)
+            mid = client.send_group_text(uid, cfg.group_id, body.text, extra)
         except NexconnError as e:
             raise HTTPException(502, str(e))
         # what a `message:send` webhook would carry for this message

@@ -64,7 +64,8 @@ def test_live_sandbox_registers_the_visitor_and_its_own_group(service, monkeypat
     assert sess == {**sess, "mode": "live", "app_key": "KEY", "token": f"tok-{uid}", "group_id": gid}
     assert "SECRET" not in json.dumps(sess)
     h = c.get("/health").json()["playground"]
-    assert h == {"mode": "on", "active_sandboxes": 1, "live_seats_left": 499, "chat_fallback": False}
+    assert h == {"mode": "on", "active_sandboxes": 1, "live_seats_left": 499, "chat_fallback": False,
+                 "new_sandboxes": "live"}
 
 
 def test_signed_webhook_routes_playground_rooms_to_their_sandbox(service, monkeypatch, tmp_path):

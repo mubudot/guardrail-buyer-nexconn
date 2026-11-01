@@ -57,8 +57,42 @@ the friend gets their own Nexconn user and joins the same room as a second appro
 | `TRY_CACHE_SIZE` | 32 | sandboxes kept open in memory (the rest reload from disk on their next request) |
 
 Creating and joining are POST-only, so link previews and crawlers never register users. A Nexconn
-refusal that looks like a quota or rate limit falls back to the offline stand-in for that sandbox; any
-other Nexconn failure answers 502 and leaves nothing behind (the seat reservation is released).
+quota or rate-limit refusal during user registration falls back to the offline stand-in for that
+sandbox. A first transient upstream failure can answer 502 and releases an unused seat reservation;
+confirmed upstream outages use the automatic fallback below.
+
+## If Nexconn is unreachable
+
+With `NEXCONN_MODE=live`, `NEXCONN_FALLBACK=auto` (default) monitors real Platform API calls. Credential,
+expired-plan or "not enabled" failures switch offline immediately; two consecutive transport or server
+failures also switch offline. User-registration capacity refusals keep their separate per-sandbox fallback.
+`NEXCONN_FALLBACK=off` preserves the old failure behavior; `force` always uses the stand-in without
+contacting Nexconn. These settings affect live mode only and are validated at startup.
+
+Only the chat transport is replaced with an in-process room on this server. Policy checks, approval
+claims and hard-rule rechecks, daily spending limits, audit records, and simulated PayPal checkout
+all run through the real service code. `/chat` still requires the configured approver token; an open
+`DEMO_MODE` cannot issue an approver identity for a configured live channel. The signed webhook stays on.
+
+New `/try` sandboxes start on the stand-in during an outage. Existing live sandboxes switch on their
+next state/session request, preserving their members and pending cards with a carried-over note.
+Their registry metadata is migrated in place, and those sandboxes stay offline for their remaining
+lifetime. An amber notice explains the reason and links to the live video and test log. When Nexconn
+returns, the notice offers **Start a new live sandbox** (with confirmation); `/chat` offers **Reconnect**.
+
+Requests to state, config, and health lazily probe with an idempotent bot token call, at most once per
+`NEXCONN_PROBE_EVERY_S` (default `60`, positive seconds) while offline. A successful probe restores live
+transport for the main room and new sandboxes. Browser SDK authentication failures, kicked connections,
+or no connection within 15 seconds request a server probe (globally limited to once per 30 seconds).
+A `/try` member can also downgrade their own sandbox via session-authenticated `POST /try/sdk-failed`
+(once per sandbox per 30 seconds); this cannot assert an outage for the rest of the site.
+
+`/try/state` includes `chat_mode`, compatible `chat_fallback`, and `fallback` (`active`, `reason` =
+`upstream` or `capacity`, `upstream`, `since`, and safe reason class `detail`). `/health` reports
+`nexconn.upstream` (`state`, safe `reason`, `since`, `last_probe_at`, `fallback`),
+`nexconn.effective_mode`, and `playground.new_sandboxes`. `/health/ready` stays 200 while the stand-in
+is working, with `checks.nexconn=true` and `nexconn_mode="offline-fallback"`; a real database or registry
+failure still fails readiness. No raw Nexconn error messages or credentials appear in health output.
 
 ## Data lifecycle
 
@@ -67,8 +101,8 @@ other Nexconn failure answers 502 and leaves nothing behind (the seat reservatio
   queued or failed.
 * Simulated PayPal orders are in memory (like the main app's mock mode): after a restart, open ones
   are marked `MOCK_RESET` and their reservation released; the agent can be asked again.
-* Rooms on the offline stand-in lose their message history on restart; pending approvals stay
-  reachable (the page lists them above the room, as `/chat` does).
+* Rooms on the offline stand-in lose their message history on restart; upstream-fallback rooms
+  rebuild pending cards from the database, and the page also lists pending approvals above the room.
 * **Reset** (owner only) deletes the sandbox database and starts a fresh one (orders, approvals, today's
   spend), keeps the room and members, and posts "Sandbox was reset" — earlier cards in the room close.
 * **Expiry** runs at startup and at most every 10 minutes on requests. The registry row is kept (marked

@@ -4,10 +4,13 @@
 // with the /try playground.
 import {createTransport} from "/static/chat-transport.js";
 import {createRoom, el, isDecision} from "/static/chat-room.js";
+import {OFFLINE_TOOLTIP, offlineView, watchSdk} from "/static/offline-model.js";
+import {updateOfflineNotice} from "/static/offline-notice.js";
 
 const $ = (id) => document.getElementById(id);
 
-const state = {cfg: null, session: null, transport: null};
+const state = {cfg: null, session: null, transport: null, offlineFallback: null};
+let sdkWatch = null, roomGen = 0;
 const room = createRoom({
   list: $("messages"), older: $("older-pending"), session: () => state.session, send: (t, x) => send(t, x),
   fetchApprovals: async () => { const r = await fetch("/approvals"); return r.ok ? r.json() : null; },
@@ -16,6 +19,7 @@ const {renderMessage, onMessages, syncApprovals} = room;
 
 function showError(msg) { const e = $("join-error"); e.textContent = msg; e.hidden = !msg; }
 function setConn(s) {
+  sdkWatch?.status(s);
   const c = $("conn"); c.hidden = false;
   const ok = s === "connected";   // exact: "disconnected" must not read as connected
   c.textContent = ok ? "Connected" : `Connection: ${s}`;
@@ -50,7 +54,12 @@ function authHeaders() {
 }
 
 async function join(ev) {
-  ev.preventDefault();
+  ev?.preventDefault();
+  const gen = ++roomGen, stale = () => gen !== roomGen;
+  sdkWatch?.stop(); sdkWatch = null;
+  try { state.transport?.stop(); } catch { /* already stopped */ }
+  state.transport = null;
+  room.clear();
   showError("");
   $("join-btn").disabled = true;
   try {
@@ -60,17 +69,28 @@ async function join(ev) {
       const detail = (await r.json().catch(() => ({}))).detail;
       throw new Error(r.status === 401 ? "Wrong approver token." : `Could not join (HTTP ${r.status}${detail ? `: ${detail}` : ""}).`);
     }
-    state.session = await r.json();
+    const session = await r.json();
+    if (stale()) return;
+    state.session = session;
+    await pollConfig(false);
+    if (stale()) return;
     localStorage.setItem("approverToken", $("token").value);
-    state.transport = await createTransport(state.session);
+    sdkWatch = state.session.mode === "live" ? watchSdk(() => probeForSdk()) : null;
+    const transport = await createTransport(state.session);
+    if (stale()) { transport.stop(); return; }
+    state.transport = transport;
     $("room-name").textContent = `Approval room · ${state.session.group_id}`;
     $("room-who").textContent = `You are ${state.session.user_id}. Approvers: ${state.session.approver_ids.join(", ")}`;
-    await state.transport.start(onMessages, setConn);   // show the room only once connected
+    await transport.start((messages) => { if (!stale()) onMessages(messages); },
+                          (status) => { if (!stale()) setConn(status); });
+    if (stale()) { transport.stop(); return; }
     await syncApprovals();
     $("join").hidden = true;
     $("room").hidden = false;
     $("text").focus();
   } catch (e) {
+    if (stale()) return;
+    sdkWatch?.fail();
     try { state.transport?.stop(); } catch { /* already stopped */ }
     state.transport = null;
     room.clear();
@@ -79,6 +99,37 @@ async function join(ev) {
     showError(e.message || String(e));
     $("join-btn").disabled = false;
   }
+}
+
+function renderMode() {
+  const cfg = state.cfg;
+  if (!cfg) return;
+  if (cfg.fallback?.active) state.offlineFallback = cfg.fallback;
+  // Keep an open stand-in honest after recovery: its room stays here until Reconnect.
+  const data = state.session?.mode === "mock" && cfg.configured_mode === "live" && state.offlineFallback ?
+    {...cfg, mode: "mock", fallback: {...state.offlineFallback, upstream: cfg.upstream?.state}} : cfg;
+  const offline = offlineView(data).visible, live = data.mode === "live";
+  const m = $("chat-mode");
+  m.textContent = offline ? "Offline stand-in (Nexconn unreachable)" : live ? `Nexconn live · ${cfg.area}` : "Nexconn mock (offline)";
+  m.className = `chip ${live ? "env-sandbox" : "env-mock"}`;
+  m.title = offline ? OFFLINE_TOOLTIP : live ? `Nexconn Web Chat SDK ${cfg.sdk_version}` :
+    "In-memory stand-in for Nexconn: no account, no network";
+  updateOfflineNotice($("offline-banner"), data);
+}
+
+async function pollConfig(rejoin = true) {
+  try {
+    const r = await fetch("/nexconn/config");
+    if (!r.ok) return;
+    state.cfg = await r.json();
+    renderMode();
+    if (rejoin && state.session?.mode === "live" && state.cfg.mode === "mock") await join();
+  } catch { /* retry on the next poll */ }
+}
+
+async function probeForSdk() {
+  try { await fetch("/nexconn/probe", {method: "POST"}); } catch { /* config still has the last real observation */ }
+  await pollConfig();
 }
 
 async function showTryLink() {
@@ -93,14 +144,11 @@ async function main() {
   const r = await fetch("/nexconn/config").catch(() => null);
   if (!r || !r.ok) { $("off").hidden = false; $("join").hidden = true; $("chat-mode").textContent = "Chat off"; return; }
   state.cfg = await r.json();
-  const m = $("chat-mode");
-  m.textContent = state.cfg.mode === "live" ? `Nexconn live · ${state.cfg.area}` : "Nexconn mock (offline)";
-  m.className = `chip ${state.cfg.mode === "live" ? "env-sandbox" : "env-mock"}`;
-  m.title = state.cfg.mode === "live" ? `Nexconn Web Chat SDK ${state.cfg.sdk_version}` :
-    "In-memory stand-in for Nexconn: no account, no network";
+  renderMode();
   for (const a of state.cfg.approver_ids) $("as-user").append(el("option", {value: a}, a));
   $("token").value = localStorage.getItem("approverToken") || "";
   $("join-form").addEventListener("submit", join);
+  $("reconnect-btn").addEventListener("click", () => location.reload());
   $("composer").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const t = $("text").value.trim();
@@ -108,6 +156,7 @@ async function main() {
     try { await send(t, null); $("text").value = ""; } catch (e) { window.alert(`Could not send: ${e.message}`); }
   });
   showTryLink();
+  setInterval(() => { if (!document.hidden) pollConfig(); }, 5000);
 }
 
 main();

@@ -25,7 +25,7 @@
     </svg>
     <div>
       <h1>Try GuardRail Buyer</h1>
-      <p class="sub">Your own sandbox · real Nexconn chat · simulated PayPal</p>
+      <p class="sub" id="try-sub">Your own sandbox · real Nexconn chat · simulated PayPal</p>
     </div>
   </div>
   <div class="status">
@@ -113,7 +113,7 @@
 
       <section class="card g-card" aria-labelledby="invite-title">
         <h2 id="invite-title">Invite a teammate</h2>
-        <p class="hint">They open the link, get their own Nexconn user and join this room as a second approver.</p>
+        <p class="hint" id="invite-hint">They open the link, get their own Nexconn user and join this room as a second approver.</p>
         <div class="invite-row">
           <label class="sr-only" for="invite-url">Invite link</label>
           <input id="invite-url" type="text" readonly>
@@ -124,6 +124,16 @@
     </aside>
 
     <section id="room" class="card room try-room" aria-labelledby="room-name">
+      <div id="offline-banner" class="offline-banner" role="status" aria-live="polite" hidden>
+        <strong>Offline mode — Nexconn isn't reachable right now</strong>
+        <p>This room is an offline stand-in for the Nexconn chat, running on this server: same cards, same
+          approve / reject messages. The guardrails, approvals, spending limits and simulated payments are the real code,
+          running for real — only the chat transport is replaced. Nothing here is a recording.</p>
+        <p class="offline-reason"></p>
+        <p>See it on live Nexconn: <a href="https://youtu.be/XQdg7dW62xc" target="_blank" rel="noopener noreferrer">demo video</a> ·
+          <a href="https://github.com/mubudot/guardrail-buyer-nexconn/blob/main/docs/NEXCONN_LIVE_E2E.md" target="_blank" rel="noopener noreferrer">live test log</a></p>
+        <p class="offline-recovered" hidden>Nexconn is back. <button id="new-live-btn" class="btn" type="button">Start a new live sandbox</button></p>
+      </div>
       <div class="room-head">
         <h2><span id="room-name">Approval room</span></h2>
         <span class="hint" id="room-who"></span>

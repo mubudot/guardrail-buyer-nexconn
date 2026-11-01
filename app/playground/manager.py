@@ -25,9 +25,11 @@ from ..guardrails import Policy
 from ..nexconn.client import MockNexconn, NexconnError
 from ..nexconn.config import NexconnConfig
 from ..nexconn.routes import _clean_extra, _item
+from ..nexconn.upstream import is_capacity_error
 from ..paypal_client import MockPayPal, PayPalError
 from ..ratelimit import RateLimiter
 from .config import PlaygroundConfig
+from .fallback import SandboxFallback
 from .registry import MembersFull, Registry
 from .sandbox import Sandbox
 
@@ -68,13 +70,6 @@ def new_user_id() -> str:
     return "t" + "".join(secrets.choice(_ALNUM) for _ in range(15))
 
 
-def is_capacity_error(e: NexconnError) -> bool:
-    """A Nexconn refusal that means "no more users / quota" (fall back to the offline stand-in)
-    rather than an outage (answer 502 and leave nothing half-created)."""
-    msg = str(e).lower()
-    return e.status == 429 or any(w in msg for w in ("quota", "limit", "exceed", "too many"))
-
-
 def delete_sandbox_files(directory: Path, sandbox_id: str) -> None:
     for suffix in DB_SUFFIXES:
         try:
@@ -90,7 +85,7 @@ def _iso(epoch: float) -> str:
 class PlaygroundManager:
     def __init__(self, pcfg: PlaygroundConfig, base_cfg: NexconnConfig, *, live_client=None,
                  mock_client: MockNexconn | None = None, policy: Policy, catalog: Catalog,
-                 clock=time.time):
+                 clock=time.time, upstream=None):
         self.cfg, self.base_cfg = pcfg, base_cfg
         self.policy, self.catalog, self.clock = policy, catalog, clock
         pcfg.dir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +99,7 @@ class PlaygroundManager:
         self._cache: OrderedDict[str, Sandbox] = OrderedDict()
         self._inuse: Counter = Counter()
         self._load_locks: dict[str, threading.Lock] = {}
+        self.fallback = SandboxFallback(self, upstream)
         self._paypals: dict[str, MockPayPal] = {}
         self._bot_registered = False
         self._last_sweep = 0.0
@@ -256,6 +252,7 @@ class PlaygroundManager:
 
     def _start_payload(self, row, member, secret) -> dict[str, Any]:
         return {"secret": secret, "sandbox_id": row["id"], "chat_mode": row["chat_mode"],
+                "fallback": self.fallback.info(row),
                 "member": {"user_id": member["user_id"], "name": member["name"], "role": member["role"]},
                 "invite_url": self.invite_url(row["id"])}
 
@@ -268,7 +265,10 @@ class PlaygroundManager:
         sid, uid, display = secrets.token_hex(6), new_user_id(), clean_name(name)
         gid = f"{GROUP_PREFIX}{sid}"
         chat_mode = "mock"
-        if self.live and self.registry.reserve_live_seat(self.cfg.max_live_users):
+        upstream = self.fallback.snapshot()
+        fallback_reason = "upstream" if self.live and upstream["state"] == "offline" else (
+            "capacity" if self.live else None)
+        if self.live and upstream["state"] == "live" and self.registry.reserve_live_seat(self.cfg.max_live_users):
             registered = False
             try:
                 self._register(uid, display)
@@ -279,14 +279,21 @@ class PlaygroundManager:
             except NexconnError as e:
                 if not registered:
                     self.registry.release_live_seat()
-                if not is_capacity_error(e):
+                if self.fallback.upstream and self.fallback.upstream.offline:
+                    fallback_reason = "upstream"
+                    upstream = self.fallback.snapshot()
+                elif registered or not is_capacity_error(e):
                     log.warning("playground: Nexconn registration failed: %s", e)
                     raise PlaygroundError(502, "Nexconn didn't answer, so no sandbox was created. Try again "
                                                "in a moment.") from None
-                log.warning("playground: Nexconn capacity reached (%s); using the offline stand-in", e)
+                else:
+                    log.warning("playground: Nexconn capacity reached; using the offline stand-in")
         secret = secrets.token_urlsafe(32)
         owner = {"user_id": uid, "name": display}
-        if not self.registry.create(sid, gid, display, chat_mode, owner, secret, self.cfg.max_active):
+        if not self.registry.create(sid, gid, display, chat_mode, owner, secret, self.cfg.max_active,
+                                    fallback_reason=fallback_reason if chat_mode == "mock" else None,
+                                    fallback_since=upstream["since"] if fallback_reason == "upstream" else None,
+                                    fallback_detail=upstream["reason"] if fallback_reason == "upstream" else None):
             raise PlaygroundError(503, "The playground is at capacity right now. Please try again later.")
         if chat_mode == "live":
             self.registry.mark_group_ready(sid)
@@ -303,6 +310,7 @@ class PlaygroundManager:
         row = self._revalidate(row)
         if row is None:
             raise PlaygroundError(404, "This invite link is unknown or its sandbox expired.")
+        row = self.fallback.ensure(row)
         sid = row["id"]
         if self.registry.member_count(sid) >= self.cfg.max_members:
             raise PlaygroundError(409, f"This sandbox already has {self.cfg.max_members} members.")
@@ -321,9 +329,12 @@ class PlaygroundManager:
                 self._register(uid, display)
             except NexconnError as e:
                 self.registry.release_live_seat()
-                self.registry.remove_member(uid)
-                log.warning("playground: teammate registration failed: %s", e)
-                raise PlaygroundError(502, "Nexconn didn't answer; try joining again in a moment.") from None
+                if self.fallback.upstream and self.fallback.upstream.offline:
+                    row = self.fallback.ensure(row)
+                else:
+                    self.registry.remove_member(uid)
+                    log.warning("playground: teammate registration failed: %s", e)
+                    raise PlaygroundError(502, "Nexconn didn't answer; try joining again in a moment.") from None
         self.registry.touch(sid, 0)
         with self.use(sid) as sb:
             try:
@@ -332,12 +343,13 @@ class PlaygroundManager:
                 log.warning("playground: adding %s to %s failed: %s", uid, sb.group_id, e)
                 sb.channel._group_ready, sb.channel.ready = False, False
             sb.channel.post("joined", f"{display} joined as an approver.")
-        return self._start_payload(row, {"user_id": uid, "name": display, "role": "teammate"}, secret)
+        return self._start_payload(self.registry.get(sid), {"user_id": uid, "name": display, "role": "teammate"}, secret)
 
     # ---- per-session actions ------------------------------------------------------------
     def state(self, secret: str | None) -> dict[str, Any]:
         self.sweep()
         row, member = self.resolve(secret)
+        row = self.fallback.ensure(row)
         sid = row["id"]
         members = self.registry.members(sid)
         with self.use(sid) as sb:
@@ -348,6 +360,7 @@ class PlaygroundManager:
         out["steps"].update({"joined": bool(row["room_joined"]), "invited": len(members) > 1})
         return {"sandbox_id": sid, "name": row["name"], "chat_mode": row["chat_mode"],
                 "chat_fallback": row["chat_mode"] == "mock" and self.live,
+                "fallback": self.fallback.info(row),
                 "you": {"user_id": member["user_id"], "name": member["name"], "role": member["role"]},
                 "members": [{"user_id": m["user_id"], "name": m["name"], "role": m["role"]} for m in members],
                 "max_members": self.cfg.max_members, "invite_url": self.invite_url(sid),
@@ -355,14 +368,20 @@ class PlaygroundManager:
 
     def session(self, secret: str | None) -> dict[str, Any]:
         row, member = self.resolve(secret)
-        with self.use(row["id"]) as sb:
-            try:
+        row = self.fallback.ensure(row)
+        try:
+            with self.use(row["id"]) as sb:
                 if member["user_id"] not in sb.channel.cfg.approver_ids:   # joined while this copy was open
                     sb.channel.add_member(member["user_id"], member["name"])
                 s = sb.channel.session(member["user_id"])
-            except PermissionError:
-                raise PlaygroundError(403, "You are not a member of this sandbox.") from None
-            except NexconnError as e:
+        except PermissionError:
+            raise PlaygroundError(403, "You are not a member of this sandbox.") from None
+        except NexconnError as e:
+            if self.fallback.upstream and self.fallback.upstream.offline:
+                row = self.fallback.ensure(row)
+                with self.use(row["id"]) as sb:
+                    s = sb.channel.session(member["user_id"])
+            else:
                 log.warning("playground session for %s failed: %s", row["id"], e)
                 raise PlaygroundError(502, "Nexconn didn't answer; try again in a moment.") from None
         self.registry.mark_room_joined(row["id"])
@@ -529,9 +548,10 @@ class PlaygroundManager:
 
     def health(self) -> dict[str, Any]:
         live_left = self.live_seats_left()
+        live = self.live and live_left > 0 and self.fallback.snapshot()["state"] == "live"
         return {"mode": "on", "active_sandboxes": self.registry.count_active(),
                 "live_seats_left": live_left if self.live else None,
-                "chat_fallback": (not self.live) or live_left == 0}
+                "chat_fallback": not live, "new_sandboxes": "live" if live else "mock"}
 
     def ready(self) -> bool:
         return self.registry.ping()

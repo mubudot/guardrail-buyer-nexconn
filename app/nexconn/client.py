@@ -31,9 +31,11 @@ ALREADY_MEMBER = 25412     # "The user is already a member of the group channel.
 
 
 class NexconnError(RuntimeError):
-    def __init__(self, message: str, code: int | None = None, status: int | None = None):
+    def __init__(self, message: str, code: int | None = None, status: int | None = None,
+                 reason: str | None = None):
         super().__init__(message)
         self.code, self.status = code, status
+        self.reason = reason
 
 
 def sign(app_secret: str, nonce: str, timestamp: str) -> str:
@@ -60,6 +62,7 @@ class NexconnClient:
         self.clock = clock
         self._host_idx = 0
         self._lock = threading.Lock()
+        self.upstream = None
 
     def headers(self) -> dict[str, str]:
         nonce = secrets.token_hex(8)                     # 16 chars (docs: at most 18)
@@ -69,6 +72,20 @@ class NexconnClient:
                 "X-Request-ID": uuid.uuid4().hex, "Content-Type": "application/json"}
 
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            out = self._request(path, body)
+        except NexconnError as e:
+            if self.upstream is not None:
+                if e.code in (GROUP_EXISTS, ALREADY_MEMBER):
+                    self.upstream.success()
+                else:
+                    self.upstream.failure(e, registration=path.endswith("/access-token/issue"))
+            raise
+        if self.upstream is not None:
+            self.upstream.success()
+        return out
+
+    def _request(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         hosts = self.cfg.api_hosts
         with self._lock:
             start = self._host_idx
@@ -78,7 +95,7 @@ class NexconnClient:
             try:
                 r = self.http.post(f"https://{hosts[idx]}{path}", json=body, headers=self.headers())
             except httpx.TransportError as e:            # timeout / connection: try the backup host
-                last = NexconnError(f"{path}: {type(e).__name__} on {hosts[idx]}")
+                last = NexconnError(f"{path}: {type(e).__name__} on {hosts[idx]}", reason="timeout")
                 continue
             if r.status_code >= 500 or r.status_code in (404, 405):
                 last = NexconnError(f"{path}: HTTP {r.status_code} on {hosts[idx]}", status=r.status_code)
@@ -97,7 +114,7 @@ class NexconnClient:
                                    f"{str(data.get('msg') or data.get('message') or '')[:200]}",
                                    code=code if isinstance(code, int) else None, status=r.status_code)
             return data
-        raise last or NexconnError(f"{path}: no API host answered")
+        raise last or NexconnError(f"{path}: no API host answered", reason="timeout")
 
     def issue_token(self, user_id: str, name: str) -> str:
         data = self._post("/v4/auth/access-token/issue", {"userId": user_id, "name": name[:64]})
