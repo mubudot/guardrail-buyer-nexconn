@@ -16,6 +16,7 @@ const state = {secret: localStorage.getItem(KEY) || "", sandbox: null, session: 
                names: new Map(), poll: null};
 const loc = parseLocation(location.pathname, location.search);
 let roomStarting = null, roomGen = 0;   // the pending room start (shared by concurrent callers), room generation
+let roomFailures = 0, roomRetryAt = 0;   // a failed room start is retried from the state poll, with backoff
 let sdkWatch = null, sdkFallbackPending = false;
 
 const room = createRoom({
@@ -132,6 +133,8 @@ async function refresh(first = false) {
       state.sandbox = s;
       render(s);
       if (state.session && state.session.mode !== s.chat_mode) restartRoom();
+      // A room start that failed (busy sandbox, Nexconn refusing) left no session: try again, backing off.
+      else if (!state.session && !roomStarting && state.secret && Date.now() >= roomRetryAt) startRoom();
       return s;
     } catch (e) {
       if (seq !== refreshSeq) return null;
@@ -152,6 +155,7 @@ function expired(msg) {
   clearInterval(state.poll);
   refreshSeq++; refreshing = null;   // an in-flight /try/state of this sandbox no longer counts
   roomGen++; roomStarting = null;     // nor an in-flight room start
+  roomFailures = 0; roomRetryAt = 0;
   sdkWatch?.stop(); sdkWatch = null;
   try { state.transport?.stop(); } catch { /* already stopped */ }
   state.transport = null; state.session = null; state.secret = "";
@@ -237,6 +241,7 @@ function startRoom() {
       const session = await api("/try/session", {method: "POST"});
       if (stale()) return;
       state.session = session;
+      roomFailures = 0; roomRetryAt = 0;
       setChatMode(session.mode);
       sdkWatch?.stop();
       sdkWatch = session.mode === "live" ? watchSdk(() => fallbackForSdk()) : null;
@@ -253,7 +258,11 @@ function startRoom() {
       if (e.status === 404 || e.status === 401) { expired(e.message); return; }
       sdkWatch?.fail();
       setConn("not connected");
-      toast(e.status ? e.message : friendlyError({status: 502}), "bad");
+      if (!state.session) {   // no room at all: the state poll retries (4 s doubling, at most 60 s apart)
+        roomRetryAt = Date.now() + Math.min(POLL_MS * 2 ** roomFailures, 60000);
+        roomFailures++;
+      }
+      if (roomFailures <= 1) toast(e.status ? e.message : friendlyError({status: 502}), "bad");
     }
   })().finally(() => { if (roomStarting === p) roomStarting = null; });
   roomStarting = p;

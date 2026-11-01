@@ -67,3 +67,13 @@ Changes made in 02efcd4 before committing:
   and network errors with backoff (2 s doubling, honouring `Retry-After`, at most 60 s per wait, 6 attempts) and stops if
   the room restarted or the session changed; the token answer is validated inside the monitored call, so an unusable
   answer counts as an unrecognised failure. 621 passed + 3 skipped.
+
+## Independent Codex review, round 4 (fresh session)
+- The R1–R3 fixes verified; 621 passed + 3 skipped.
+- P2: if the very first `/try/session` failed (e.g. 409 because the fallback migration found the sandbox busy), there was
+  no session and no SDK watchdog, so later state polls showed the stand-in but never started its chat until a reload.
+- Fixed (maintainer, node regression test running the real page script, failing on the old code): when a state poll
+  finds no room session and no start in progress, it starts the room again, backing off 4 s doubling up to 60 s; the
+  error toast is shown once per failure streak. Checked again in Chromium (forced mode, desktop and mobile, no console
+  errors). 622 passed + 3 skipped.
+- Stopped here: four review rounds, each finding fewer and smaller issues; this last fix was not re-reviewed by Codex.

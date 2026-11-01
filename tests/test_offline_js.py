@@ -218,3 +218,82 @@ def test_sdk_failed_retry_policy_backs_off_and_honours_retry_after():
     body = js[js.index("async function fallbackForSdk"):js.index("async function send(")]
     assert "sdkRetryDelay(status, r?.headers.get(\"Retry-After\"), attempt)" in body
     assert body.count("if (!current()) return;") >= 3     # a restarted room or new session stops retrying
+
+
+TRY_ROOM_RETRY = r"""
+import fs from 'node:fs';
+import vm from 'node:vm';
+const elements = new Map(), polls = [], requests = [], transports = [], toasts = [];
+const elem = (id) => {
+  if (!elements.has(id)) elements.set(id, {value: '', hidden: false, style: {}, handlers: {}, textContent: '',
+    addEventListener(type, fn) { this.handlers[type] = fn; }, focus() {}, append() {}, replaceChildren() {},
+    setAttribute() {}, querySelector() { return null; }, classList: {add() {}, remove() {}, toggle() {}}});
+  return elements.get(id);
+};
+let mode = 'live', now = 1_000_000, sessionAnswers = [409, 409, 200];
+const sandbox = () => ({sandbox_id: 'abc', name: 'Owner', chat_mode: mode,
+  fallback: {active: mode === 'mock', reason: 'upstream', detail: 'auth', upstream: 'offline'},
+  you: {role: 'owner', name: 'Owner', user_id: 'owner'}, members: [{name: 'Owner', user_id: 'owner', role: 'owner'}],
+  expires_at: 'Mon 2026-11-02 8:00 AM CST (UTC+08:00)', steps: {},
+  limits: {currency: 'USD', per_order_cap: '50', hard_max_per_order: '500', daily_cap: '250', spent_today: '0'},
+  invite_url: '/try/join/code', orders: [], approvals: []});
+class FakeDate extends Date { static now() { return now; } }
+const context = vm.createContext({Date: FakeDate,
+  document: {getElementById: elem, querySelector: () => null, querySelectorAll: () => [], addEventListener() {}, hidden: false},
+  location: {pathname: '/try', search: '', origin: 'http://local'},
+  localStorage: {getItem: () => 'owner-secret', setItem() {}, removeItem() {}},
+  history: {replaceState() {}}, window: {confirm: () => true},
+  setTimeout: () => 1, clearTimeout() {}, setInterval: (fn) => { polls.push(fn); return polls.length; }, clearInterval() {},
+  fetch: async (url) => {
+    requests.push(url);
+    if (url === '/try/state') return {ok: true, json: async () => sandbox()};
+    if (url === '/try/session') {
+      const status = sessionAnswers.shift();
+      if (status !== 200) return {ok: false, status, json: async () => ({detail: 'busy'})};
+      return {ok: true, json: async () => ({mode, user_id: 'owner', group_id: 'g'})};
+    }
+    throw Error(`unexpected URL ${url}`);
+  }});
+const stubs = {
+  '/static/chat-transport.js': {createTransport: async (s) => { transports.push(s.mode); return {async start() {}, stop() {}}; }},
+  '/static/chat-room.js': {el: () => ({}), createRoom: () => ({clear() {}, onMessages() {}, async syncApprovals() {}})},
+  '/static/friendly-errors.js': {describeResponse: async (r) => `HTTP ${r.status}`, friendlyError: () => 'failure'},
+  '/static/try-model.js': {dailyProgress: () => ({pct: 0, over: false}), money: String,
+    parseLocation: () => ({invite: false}), safePayUrl: () => false, stepView: () => []},
+  '/static/offline-model.js': {OFFLINE_TOOLTIP: '', offlineView: () => ({visible: mode === 'mock'}),
+    sdkRetryDelay: () => null, watchSdk: () => ({status() {}, fail() {}, stop() {}})},
+  '/static/offline-notice.js': {updateOfflineNotice() {}},
+};
+const source = fs.readFileSync(process.argv[1], 'utf8') + '\nexport {state};';
+const page = new vm.SourceTextModule(source, {context});
+await page.link((name) => new vm.SyntheticModule(Object.keys(stubs[name]), function () {
+  for (const [k, v] of Object.entries(stubs[name])) this.setExport(k, v);
+}, {context}));
+await page.evaluate();
+const tick = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+await tick();
+const sessions = () => requests.filter((u) => u === '/try/session').length;
+const out = {initial: sessions()};
+mode = 'mock';
+now += 1000; await polls[0](); await tick();
+out.beforeBackoff = sessions();             // 4 s backoff not over: no new session request
+now += 4000; await polls[0](); await tick();
+out.secondTry = sessions();                 // retried once, 409 again: next wait 8 s
+now += 4000; await polls[0](); await tick();
+out.stillWaiting = sessions();
+now += 4500; await polls[0](); await tick();
+out.thirdTry = sessions();
+now += 60000; await polls[0](); await tick();
+console.log(JSON.stringify({...out, after: sessions(), transports, session: page.namespace.state.session?.mode ?? null,
+  toasts: elements.get('toast')?.textContent ?? null}));
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node not available")
+def test_try_failed_initial_room_start_is_retried_from_the_state_poll_with_backoff():
+    proc = subprocess.run([NODE, "--experimental-vm-modules", "--input-type=module", "-e", TRY_ROOM_RETRY,
+                           str(STATIC / "try.js")], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert (out["initial"], out["beforeBackoff"], out["secondTry"], out["stillWaiting"], out["thirdTry"]) == (1, 1, 2, 2, 3)
+    assert out["after"] == 3 and out["transports"] == ["mock"] and out["session"] == "mock"
