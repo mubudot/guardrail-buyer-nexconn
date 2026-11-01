@@ -183,7 +183,7 @@ class Registry:
                                                            digest(session_secret), self.clock()))
 
     def remove_member(self, user_id: str) -> None:
-        """Undo add_member when the teammate's Nexconn registration failed."""
+        """Undo add_member when a join fails before returning the teammate's session."""
         with self.tx() as c:
             c.execute("DELETE FROM members WHERE user_id=? AND role='teammate'", (user_id,))
 

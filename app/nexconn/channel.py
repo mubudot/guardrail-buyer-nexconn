@@ -96,8 +96,7 @@ class ChatApprovalChannel:
 
     # ---- setup ----------------------------------------------------------------
     def refresh_transport(self, *, probe: bool = False) -> bool:
-        with self._transport_lock:
-            return self.transport.sync(probe=probe) if self.transport is not None else False
+        return self.transport.sync(probe=probe) if self.transport is not None else False
 
     def public_config(self) -> dict[str, Any]:
         return self.transport.public() if self.transport is not None else {
@@ -106,24 +105,33 @@ class ChatApprovalChannel:
     def bootstrap(self) -> bool:
         """Register the bot and approvers and make sure the approval group exists with all of
         them in it. Safe to call again; failures are kept in last_error and retried lazily."""
-        with self._transport_lock, self._boot_lock:
-            self.refresh_transport()
-            if self.ready:
-                return True
+        self.refresh_transport()
+        with self._boot_lock:
+            with self._transport_lock:
+                if self.ready:
+                    return True
+                client = self.client
             try:
-                self.client.issue_token(self.cfg.bot_user_id, "GuardRail agent")  # registers the bot
+                client.issue_token(self.cfg.bot_user_id, "GuardRail agent")  # registers the bot
                 for a in self.cfg.approver_ids:
-                    self.client.issue_token(a, a)
-                self.client.ensure_group(self.cfg.group_id, self.cfg.group_name, self.cfg.bot_user_id,
-                                         [self.cfg.bot_user_id, *self.cfg.approver_ids])
+                    client.issue_token(a, a)
+                client.ensure_group(self.cfg.group_id, self.cfg.group_name, self.cfg.bot_user_id,
+                                    [self.cfg.bot_user_id, *self.cfg.approver_ids])
             except NexconnError as e:
-                self.last_error = f"bootstrap: {e}"
+                with self._transport_lock:
+                    if self.client is client:
+                        self.last_error = f"bootstrap: {e}"
                 log.warning("Nexconn bootstrap failed: %s", e)
-                if self.refresh_transport():
+                self.refresh_transport()
+                if self.client is not client:
                     return self.bootstrap()
                 return False
-            self.ready, self.last_error = True, None
-            return True
+            with self._transport_lock:
+                if self.client is client:
+                    self.ready, self.last_error = True, None
+                    return True
+            # A transport change during I/O needs its own bootstrap; the old result is stale.
+            return self.bootstrap()
 
     def start(self) -> None:
         """Startup: bootstrap, re-send posts a previous run left unsent, finish decisions it
@@ -176,17 +184,19 @@ class ChatApprovalChannel:
         uid = user_id or self.cfg.approver_ids[0]
         if uid not in self.cfg.approver_ids:
             raise PermissionError(f"{uid} is not in NEXCONN_APPROVER_IDS")
-        with self._transport_lock:
-            self.refresh_transport(probe=True)
+        self.refresh_transport(probe=True)
+        self.bootstrap()
+        client = self.client
+        try:
+            token = client.issue_token(uid, uid)
+        except NexconnError:
+            self.refresh_transport()
+            if self.client is client:
+                raise
             self.bootstrap()
-            try:
-                token = self.client.issue_token(uid, uid)
-            except NexconnError:
-                if not self.refresh_transport():
-                    raise
-                self.bootstrap()
-                token = self.client.issue_token(uid, uid)
-            mode = self.transport.mode if self.transport is not None else self.cfg.mode
+            client = self.client
+            token = client.issue_token(uid, uid)
+        mode = "mock" if self.transport is not None and client is self.transport.mock else self.cfg.mode
         return {"mode": mode, "app_key": self.cfg.app_key if mode == "live" else "",
                 "area": self.cfg.area, "token": token, "user_id": uid, "group_id": self.cfg.group_id,
                 "bot_user_id": self.cfg.bot_user_id, "approver_ids": list(self.cfg.approver_ids)}
@@ -282,11 +292,7 @@ class ChatApprovalChannel:
         return done.wait(timeout)
 
     def _send(self, post_id: int) -> None:
-        with self._transport_lock:
-            self.refresh_transport()
-            self._send_current(post_id)
-
-    def _send_current(self, post_id: int) -> None:
+        self.refresh_transport()
         st = self.svc.store
         now = self._clock()
         with st.tx() as c:   # claim: only one worker / process sends a given post
@@ -297,20 +303,24 @@ class ChatApprovalChannel:
             row = c.execute("SELECT * FROM nexconn_posts WHERE id=?", (post_id,)).fetchone()
         if claimed != 1 or row is None:
             return
+        client = self.client
         try:
             if not self.bootstrap():
                 raise NexconnError(self.last_error or "bootstrap failed")
-            mid = self.client.send_group_text(self.cfg.bot_user_id, self.cfg.group_id, row["text"],
-                                              json.loads(row["extra"]))
+            client = self.client
+            mid = client.send_group_text(self.cfg.bot_user_id, self.cfg.group_id, row["text"],
+                                        json.loads(row["extra"]))
         except NexconnError as e:
-            if self.refresh_transport() and self.bootstrap():
+            self.refresh_transport()
+            if self.client is not client and self.bootstrap():
                 # The failed live send remains claimed by us; finish it on the stand-in now.
                 try:
+                    client = self.client
                     text = row["text"]
-                    if row["kind"] == "request" and self.transport is not None and self.transport.mode == "mock":
+                    if row["kind"] == "request" and self.transport is not None and client is self.transport.mock:
                         text += "\nCarried over to the offline stand-in."
-                    mid = self.client.send_group_text(self.cfg.bot_user_id, self.cfg.group_id,
-                                                      text, json.loads(row["extra"]))
+                    mid = client.send_group_text(self.cfg.bot_user_id, self.cfg.group_id,
+                                                 text, json.loads(row["extra"]))
                 except NexconnError as retry_error:
                     e = retry_error
                 else:

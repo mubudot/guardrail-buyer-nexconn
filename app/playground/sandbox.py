@@ -103,8 +103,6 @@ class Sandbox:
             self.agent = OfflineAgent(self.svc)
             if self.chat_mode == "mock" and row.get("fallback_reason") == "upstream":
                 client.issue_token(cfg.bot_user_id, "GuardRail agent")
-                for member in members:
-                    client.issue_token(member["user_id"], member["name"])
                 self.channel.bootstrap()
                 if not client.history(self.group_id):
                     self.channel.restore_pending()

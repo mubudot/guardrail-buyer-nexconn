@@ -137,15 +137,15 @@ def build_router(channel: ChatApprovalChannel, require_approver, static_dir, rel
 
     # ---- mock transport (offline demo and tests) ---------------------------------
     def mock_user(x_nexconn_token: str | None) -> tuple[str, MockNexconn]:
+        channel.refresh_transport()
         with channel._transport_lock:
-            channel.refresh_transport()
             client = channel.client
-            if not isinstance(client, MockNexconn):
-                raise HTTPException(404, "mock transport only exists in NEXCONN_MODE=mock")
-            uid = client.user_for_token(x_nexconn_token or "")
-            if uid is None:
-                raise HTTPException(401, "mock session token required (X-Nexconn-Token)")
-            return uid, client
+        if not isinstance(client, MockNexconn):
+            raise HTTPException(404, "mock transport only exists in NEXCONN_MODE=mock")
+        uid = client.user_for_token(x_nexconn_token or "")
+        if uid is None:
+            raise HTTPException(401, "mock session token required (X-Nexconn-Token)")
+        return uid, client
 
     @r.get("/nexconn/mock/messages")
     def mock_messages(after: int = 0, x_nexconn_token: str | None = Header(default=None)):

@@ -320,30 +320,38 @@ class PlaygroundManager:
             self.registry.add_member(sid, {"user_id": uid, "name": display}, secret, self.cfg.max_members)
         except MembersFull:
             raise PlaygroundError(409, f"This sandbox already has {self.cfg.max_members} members.") from None
-        if row["chat_mode"] == "live":
-            if not self.registry.reserve_live_seat(self.cfg.max_live_users):
-                self.registry.remove_member(uid)
-                raise PlaygroundError(503, "Live Nexconn seats are full right now, so no teammate can join this "
-                                           "sandbox. Start your own sandbox instead (it runs on an offline stand-in).")
-            try:
-                self._register(uid, display)
-            except NexconnError as e:
+        seat_taken = False
+        try:
+            if row["chat_mode"] == "live":
+                seat_taken = self.registry.reserve_live_seat(self.cfg.max_live_users)
+                if not seat_taken:
+                    raise PlaygroundError(503, "Live Nexconn seats are full right now, so no teammate can join this "
+                                               "sandbox. Start your own sandbox instead (it runs on an offline stand-in).")
+                try:
+                    self._register(uid, display)
+                except NexconnError as e:
+                    self.registry.release_live_seat()
+                    seat_taken = False
+                    if self.fallback.upstream and self.fallback.upstream.offline:
+                        row = self.fallback.ensure(row)
+                    else:
+                        log.warning("playground: teammate registration failed: %s", e)
+                        raise PlaygroundError(502, "Nexconn didn't answer; try joining again in a moment.") from None
+            self.registry.touch(sid, 0)
+            with self.use(sid) as sb:
+                try:
+                    sb.channel.add_member(uid, display)
+                except NexconnError as e:        # retried by the next bootstrap (session / post)
+                    log.warning("playground: adding %s to %s failed: %s", uid, sb.group_id, e)
+                    sb.channel._group_ready, sb.channel.ready = False, False
+                sb.channel.post("joined", f"{display} joined as an approver.")
+            return self._start_payload(self.registry.get(sid), {"user_id": uid, "name": display, "role": "teammate"}, secret)
+        except BaseException:
+            # No secret reached the caller, so every failure after add_member must undo the join.
+            self.registry.remove_member(uid)
+            if seat_taken:
                 self.registry.release_live_seat()
-                if self.fallback.upstream and self.fallback.upstream.offline:
-                    row = self.fallback.ensure(row)
-                else:
-                    self.registry.remove_member(uid)
-                    log.warning("playground: teammate registration failed: %s", e)
-                    raise PlaygroundError(502, "Nexconn didn't answer; try joining again in a moment.") from None
-        self.registry.touch(sid, 0)
-        with self.use(sid) as sb:
-            try:
-                sb.channel.add_member(uid, display)
-            except NexconnError as e:        # retried by the next bootstrap (session / post)
-                log.warning("playground: adding %s to %s failed: %s", uid, sb.group_id, e)
-                sb.channel._group_ready, sb.channel.ready = False, False
-            sb.channel.post("joined", f"{display} joined as an approver.")
-        return self._start_payload(self.registry.get(sid), {"user_id": uid, "name": display, "role": "teammate"}, secret)
+            raise
 
     # ---- per-session actions ------------------------------------------------------------
     def state(self, secret: str | None) -> dict[str, Any]:

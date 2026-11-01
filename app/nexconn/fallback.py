@@ -21,22 +21,24 @@ class ChannelTransport:
         return "mock" if self.channel.client is self.mock else "live"
 
     def sync(self, *, probe=False):
+        # A probe may wait on the network. Concurrent readers use the last observation.
         self.upstream.snapshot(probe=probe)
         ch = self.channel
-        target = self.mock if self.upstream.offline else self.live
-        if ch.client is target:
-            return False
-        ch.client, ch.ready, ch.last_error = target, False, None
+        with ch._transport_lock:
+            target = self.mock if self.upstream.offline else self.live
+            if ch.client is target:
+                return False
+            ch.client, ch.ready, ch.last_error = target, False, None
         # The target is installed before bootstrap / retry, so their recursive sync is a no-op.
-        if ch.bootstrap():
+        if ch.bootstrap() and ch.client is target:
             ch.restore_pending(carried=target is self.mock)
             ch.retry_failed()
         return True
 
     def public(self):
         ch = self.channel
+        self.sync(probe=True)
         with ch._transport_lock:
-            self.sync(probe=True)
             upstream = self.upstream.snapshot()
             active = self.mode == "mock"
             return {**ch.cfg.public(), "configured_mode": ch.cfg.mode, "mode": self.mode,

@@ -3,7 +3,7 @@ import dataclasses
 import json
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 
 import httpx
 import pytest
@@ -188,6 +188,93 @@ def test_concurrent_lazy_requests_reserve_only_one_probe():
         release.set()
         assert first.result()["state"] == "live"
     assert calls == [1]
+
+
+def responsive_requests(c, pool, *, ready_status=200, mock_token=None):
+    # All requests share TestClient's portal and FastAPI's 40-worker pool. A lock convoy
+    # on config must not exhaust that pool and prevent even liveness from answering.
+    paths = ["/nexconn/config"] * 40 + ["/health", "/health/live", "/health/ready"]
+    requests = [pool.submit(c.get, path) for path in paths]
+    expected = [200] * 42 + [ready_status]
+    if mock_token:
+        requests.append(pool.submit(c.post, "/nexconn/mock/send",
+                                    headers={"X-Nexconn-Token": mock_token}, json={"text": "still online"}))
+        expected.append(200)
+    _, pending = wait(requests, timeout=5)
+    assert not pending, f"{len(pending)} requests stalled behind Nexconn I/O"
+    responses = [request.result() for request in requests]
+    assert [response.status_code for response in responses] == expected
+    return responses
+
+
+@pytest.mark.parametrize("method, path", [
+    ("GET", "/nexconn/config"), ("GET", "/health"), ("GET", "/health/ready"),
+    ("POST", "/nexconn/session"),
+])
+def test_slow_probe_does_not_block_config_health_or_offline_sends(make_offline_app, method, path):
+    c, fake, monitor, clock = make_offline_app(failure=NexconnError("expired", status=401))
+    session = c.post("/nexconn/session", headers={"X-Approver-Token": TOKEN}).json()
+    entered, release, calls = threading.Event(), threading.Event(), []
+
+    def probe():
+        calls.append(1)
+        entered.set()
+        assert release.wait(10)
+
+    monitor.set_probe(probe)
+    fake.error = None
+    clock.now += 60
+    with c, ThreadPoolExecutor(max_workers=48) as pool:
+        first = pool.submit(c.request, method, path, headers={"X-Approver-Token": TOKEN})
+        try:
+            assert entered.wait(5)
+            responses = responsive_requests(c, pool, mock_token=session["token"])
+            assert all(response.json()["mode"] == "mock" for response in responses[:40])
+            assert not first.done()
+        finally:
+            release.set()
+        assert first.result(timeout=5).status_code == 200
+    assert calls == [1] and not monitor.offline
+
+
+@pytest.mark.parametrize("operation", ["send", "session", "bootstrap"])
+def test_slow_live_io_does_not_block_config_or_health(make_offline_app, service, monkeypatch, operation):
+    c, fake, _, _ = make_offline_app()
+    channel = c.app.state.nexconn
+    entered, release = threading.Event(), threading.Event()
+    method = {"send": "send_group_text", "session": "issue_token", "bootstrap": "ensure_group"}[operation]
+    original = getattr(fake, method)
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(10)
+        return original(*args)
+
+    monkeypatch.setattr(fake, method, blocked)
+    if operation == "bootstrap":
+        channel.ready = False
+    with c, ThreadPoolExecutor(max_workers=48) as pool:
+        if operation == "send":
+            first = pool.submit(service.request_approval, "P-1003", 1, "slow live send")
+        elif operation == "session":
+            first = pool.submit(c.post, "/nexconn/session", headers={"X-Approver-Token": TOKEN})
+        else:
+            first = pool.submit(channel.bootstrap)
+        try:
+            assert entered.wait(5)
+            responses = responsive_requests(c, pool, ready_status=503 if operation == "bootstrap" else 200)
+            assert all(response.json()["mode"] == "live" for response in responses[:40])
+            assert not first.done()
+        finally:
+            release.set()
+        result = first.result(timeout=5)
+        if operation == "send":
+            assert result["approval_id"]
+            assert channel.status()["posts"][0]["status"] == "SENT"
+        elif operation == "session":
+            assert result.status_code == 200 and result.json()["mode"] == "live"
+        else:
+            assert result and channel.ready
 
 
 @pytest.mark.parametrize("fallback, offline", [("off", False), ("force", True)])
@@ -376,6 +463,73 @@ def test_session_failure_itself_migrates_existing_live_room(make_offline_app):
     response = c.post("/try/session", headers=H(owner))
     assert response.status_code == 200 and response.json()["mode"] == "mock" and monitor.offline
     assert c.get("/try/state", headers=H(owner)).json()["fallback"]["reason"] == "upstream"
+
+
+def test_failed_join_during_busy_fallback_removes_member_and_frees_seat(make_offline_app, monkeypatch):
+    monkeypatch.setenv("TRY_MAX_MEMBERS", "2")
+    c, fake, monitor, _ = make_offline_app()
+    owner = start(c, "Owner")
+    pg, sid = c.app.state.playground, owner["sandbox_id"]
+    seats = pg.registry.counter("live_users_registered")
+    fake.fail_method, fake.error = "issue_token", NexconnError("expired", status=401)
+    body = {"code": owner["invite_url"].rsplit("/", 1)[1], "name": "Teammate"}
+    with pg.use(sid):  # an owner request is still using the sandbox when registration fails
+        response = c.post("/try/join", json=body)
+        assert response.status_code == 409 and monitor.offline
+        assert pg.registry.member_count(sid) == 1
+        assert pg.registry.counter("live_users_registered") == seats
+    retry = c.post("/try/join", json=body)
+    assert retry.status_code == 200 and retry.json()["chat_mode"] == "mock"
+    assert pg.registry.member_count(sid) == 2
+    assert c.post("/try/session", headers=H(retry.json())).status_code == 200
+
+
+def test_join_failure_after_registration_removes_member_and_frees_seat(make_offline_app, monkeypatch):
+    from app.playground.manager import PlaygroundError
+
+    monkeypatch.setenv("TRY_MAX_MEMBERS", "2")
+    c, _, _, _ = make_offline_app()
+    owner = start(c, "Owner")
+    pg = c.app.state.playground
+    seats = pg.registry.counter("live_users_registered")
+    body = {"code": owner["invite_url"].rsplit("/", 1)[1]}
+
+    def fail(*args):
+        raise PlaygroundError(409, "busy")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pg.registry, "touch", fail)
+        assert c.post("/try/join", json=body).status_code == 409
+    assert pg.registry.member_count(owner["sandbox_id"]) == 1
+    assert pg.registry.counter("live_users_registered") == seats
+    assert c.post("/try/join", json=body).status_code == 200
+
+
+def test_fallback_cache_reloads_preserve_member_tokens(make_offline_app, monkeypatch):
+    monkeypatch.setenv("TRY_CACHE_SIZE", "1")
+    c, fake, _, _ = make_offline_app(fallback="force")
+    owner = start(c, "Owner")
+    teammate = c.post("/try/join", json={"code": owner["invite_url"].rsplit("/", 1)[1]}).json()
+    sessions = [room(c, member)[0] for member in (owner, teammate)]
+    other = start(c, "Other")
+    pg, issued = c.app.state.playground, []
+    original = pg.mock.issue_token
+
+    def issue_token(uid, name):
+        issued.append(uid)
+        return original(uid, name)
+
+    monkeypatch.setattr(pg.mock, "issue_token", issue_token)
+    for _ in range(pg.mock.TOKENS_PER_USER + 1):
+        for member in (owner, other):
+            assert c.get("/try/state", headers=H(member)).status_code == 200
+            assert list(pg._cache) == [member["sandbox_id"]]
+    for session in sessions:
+        token = {"X-Nexconn-Token": session["token"]}
+        assert c.get("/try/mock/messages", headers=token).status_code == 200
+        assert c.post("/try/mock/send", headers=token, json={"text": "still connected"}).status_code == 200
+    assert issued and set(issued) == {pg.base_cfg.bot_user_id}
+    assert fake.calls == []
 
 
 def test_carried_pending_card_does_not_wait_for_an_abandoned_send_claim(make_offline_app):
