@@ -19,11 +19,31 @@ def iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
 
 
-def error_reason(error: Exception) -> str:
+def _definite_reason(error: Exception) -> str | None:
+    """HTTP status wins over business codes; both win over message wording."""
     status, code = getattr(error, "status", None), getattr(error, "code", None)
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "capacity"
+    if isinstance(status, int) and status >= 500:
+        return "server"
+    if code in (401, 403, 1002, 1003):
+        return "auth"
+    if code == 429:
+        return "capacity"
+    return None
+
+
+def error_reason(error: Exception) -> str:
+    definite = _definite_reason(error)
+    if definite is not None:
+        return "unknown" if definite == "capacity" else definite
+    if is_capacity_error(error):
+        return "unknown"  # outside registration, capacity uses the unrecognised-failure threshold
     # The token endpoint itself contains '/auth/'; it says nothing about the failure.
     msg = re.sub(r"(?:https?://|/)\S+", "", str(error).lower())
-    if status in (401, 403) or code in (401, 403, 1002, 1003) or any(
+    if any(
             word in msg for word in ("auth", "app-key", "app key", "appkey", "signature", "credential",
                                     "not enabled", "expired", "expiry", "plan", "subscription")):
         return "auth"
@@ -32,14 +52,14 @@ def error_reason(error: Exception) -> str:
                 word in msg for word in ("timeout", "timed out", "no api host answered", "no host answered",
                                         "transport", "connecterror")):
         return "timeout"
-    if isinstance(status, int) and status >= 500:
-        return "server"
     return "unknown"
 
 
 def is_capacity_error(error: Exception) -> bool:
-    return getattr(error, "status", None) == 429 or any(
-        word in str(error).lower() for word in ("quota", "limit", "exceed", "too many"))
+    definite = _definite_reason(error)
+    if definite is not None:
+        return definite == "capacity"
+    return any(word in str(error).lower() for word in ("quota", "limit", "exceed", "too many", "too-many"))
 
 
 class UpstreamMonitor:

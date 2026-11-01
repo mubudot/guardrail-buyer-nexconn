@@ -26,10 +26,10 @@ function setConn(s) {
   c.className = `chip ${ok ? "env-sandbox" : "warn"}`;
 }
 
-async function relay(messageId, text, extra) {
+async function relay(messageId, text, extra, userId, headers) {
   // live mode, local run without a public webhook: tell our server about the decision we sent
-  const r = await fetch("/nexconn/relay", {method: "POST", headers: authHeaders(),
-    body: JSON.stringify({message_id: messageId, user_id: state.session.user_id, text, extra: extra || null})});
+  const r = await fetch("/nexconn/relay", {method: "POST", headers,
+    body: JSON.stringify({message_id: messageId, user_id: userId, text, extra: extra || null})});
   if (!r.ok) {
     const detail = (await r.json().catch(() => ({}))).detail;
     throw new Error(`the decision was posted in the room but the server did not take it (HTTP ${r.status}` +
@@ -39,13 +39,16 @@ async function relay(messageId, text, extra) {
 }
 
 async function send(text, extra) {
-  const {messageId} = await state.transport.send(text, extra);
-  if (state.session.mode === "live") {   // the SDK does not echo our own message back
-    renderMessage({id: messageId, from: state.session.user_id, text, extra, time: Date.now()});
+  // A config poll can rejoin while sending; finish this send with its original session.
+  const transport = state.transport, {mode, user_id: userId} = state.session;
+  const relayEnabled = state.cfg.relay, headers = authHeaders();
+  const {messageId} = await transport.send(text, extra);
+  if (mode === "live") {   // the SDK does not echo our own message back
+    renderMessage({id: messageId, from: userId, text, extra, time: Date.now()});
     const box = $("messages"); box.scrollTop = box.scrollHeight;
   }
-  if (state.session.mode === "live" && state.cfg.relay && isDecision(text, extra)) {
-    await relay(messageId, text, extra);
+  if (mode === "live" && relayEnabled && isDecision(text, extra)) {
+    await relay(messageId, text, extra, userId, headers);
   }
 }
 

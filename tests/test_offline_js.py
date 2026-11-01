@@ -97,3 +97,101 @@ def test_offline_model_reason_lines_visibility_and_sdk_watchdog():
     assert out["once"] == 1 and out["afterKick"] == 1 and out["failCount"] == 2
     assert out["manual"] == "Why: offline mode was switched on for this server."
     assert out["tooltip"] == "Nexconn is unreachable, so this room runs on an in-process stand-in. Guardrails and approvals run for real."
+
+
+PENDING_SEND = r"""
+import fs from 'node:fs';
+import vm from 'node:vm';
+const relayStatus = Number(process.argv[2]);
+const elements = new Map(), polls = [], transports = [], relays = [], rendered = [], alerts = [];
+const $ = (id) => {
+  if (!elements.has(id)) elements.set(id, {value: '', hidden: false, handlers: {},
+    addEventListener(type, fn) { this.handlers[type] = fn; }, append() {}, focus() {}});
+  return elements.get(id);
+};
+let cfg = {mode: 'live', relay: true, approver_ids: ['alice', 'bob']};
+let resolveSend;
+const fetch = async (url, opts = {}) => {
+  if (url === '/nexconn/config') return {ok: true, json: async () => ({...cfg})};
+  if (url.startsWith('/nexconn/session?')) return {ok: true, json: async () => ({
+    mode: cfg.mode, user_id: new URL(url, 'http://local').searchParams.get('as_user'),
+    group_id: 'approvals', approver_ids: cfg.approver_ids,
+  })};
+  if (url === '/nexconn/relay') {
+    relays.push({headers: opts.headers, body: JSON.parse(opts.body)});
+    return {ok: relayStatus === 200, status: relayStatus, json: async () => ({detail: 'relay unavailable'})};
+  }
+  if (url === '/health') return {ok: true, json: async () => ({})};
+  throw Error(`unexpected fetch: ${url}`);
+};
+const context = vm.createContext({document: {getElementById: $, hidden: false}, fetch,
+  localStorage: {getItem: () => 'original-token', setItem() {}},
+  setInterval: (fn) => polls.push(fn), window: {alert: (msg) => alerts.push(msg)}});
+const stubs = {
+  '/static/chat-transport.js': {createTransport: async (session) => {
+    const transport = {mode: session.mode, stopped: false, sends: [],
+      async start(onMessages, onStatus) { onStatus('connected'); },
+      send(text, extra) { this.sends.push({text, extra}); return new Promise((r) => { resolveSend = r; }); },
+      stop() { this.stopped = true; }};
+    transports.push(transport);
+    return transport;
+  }},
+  '/static/chat-room.js': {el: () => ({}),
+    isDecision: (text, extra) => extra?.grb === 'decision' || /^approve APR-/.test(text),
+    createRoom: () => ({renderMessage: (m) => rendered.push(m), onMessages() {},
+      async syncApprovals() {}, clear() {}})},
+  '/static/offline-model.js': {OFFLINE_TOOLTIP: '', offlineView: () => ({visible: false}),
+    watchSdk: () => ({status() {}, stop() {}, fail() {}})},
+  '/static/offline-notice.js': {updateOfflineNotice() {}},
+};
+const page = new vm.SourceTextModule(fs.readFileSync(process.argv[1], 'utf8'), {context});
+await page.link((name) => {
+  const exports = stubs[name];
+  if (!exports) throw Error(`unexpected import: ${name}`);
+  return new vm.SyntheticModule(Object.keys(exports), function () {
+    for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
+  }, {context});
+});
+await page.evaluate();
+const tick = () => new Promise((r) => setImmediate(r));
+await tick();
+$('as-user').value = 'alice';
+await $('join-form').handlers.submit({preventDefault() {}});
+$('text').value = 'approve APR-12345678';
+const pending = $('composer').handlers.submit({preventDefault() {}});
+// The real pollConfig -> join path replaces transport, identity, credentials and relay setting.
+cfg = {...cfg, mode: 'mock', relay: false};
+$('as-user').value = 'bob'; $('token').value = 'replacement-token';
+polls[0]();
+await tick();
+const beforeCompletion = {modes: transports.map((t) => t.mode), stopped: transports[0].stopped,
+  sends: transports.map((t) => t.sends), relays: relays.length};
+resolveSend({messageId: 'LIVE-DECISION'});
+await pending;
+console.log(JSON.stringify({beforeCompletion, relays, rendered, alerts, text: $('text').value}));
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node not available")
+@pytest.mark.parametrize("relay_status", [200, 502])
+def test_chat_pending_live_decision_relays_original_session_after_automatic_rejoin(relay_status):
+    proc = subprocess.run([NODE, "--experimental-vm-modules", "--input-type=module", "-e", PENDING_SEND,
+                           str(STATIC / "chat.js"), str(relay_status)],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["beforeCompletion"] == {
+        "modes": ["live", "mock"], "stopped": True,
+        "sends": [[{"text": "approve APR-12345678", "extra": None}], []], "relays": 0,
+    }
+    assert out["relays"] == [{
+        "headers": {"Content-Type": "application/json", "X-Approver-Token": "original-token"},
+        "body": {"message_id": "LIVE-DECISION", "user_id": "alice", "text": "approve APR-12345678", "extra": None},
+    }]
+    assert len(out["rendered"]) == 1
+    assert out["rendered"][0]["id"] == "LIVE-DECISION" and out["rendered"][0]["from"] == "alice"
+    if relay_status == 200:
+        assert out["alerts"] == [] and out["text"] == ""
+    else:
+        assert len(out["alerts"]) == 1 and "HTTP 502: relay unavailable" in out["alerts"][0]
+        assert out["text"] == "approve APR-12345678"

@@ -80,6 +80,13 @@ def make_offline_app(service, monkeypatch, tmp_path):
     (NexconnError("credentials at a private host", status=401), "auth"),
     (NexconnError("not allowed", status=403), "auth"),
     (NexconnError("signature invalid", code=1002), "auth"),
+    (NexconnError("quota exceeded for this app key", status=401, code=429), "auth"),
+    (NexconnError("quota exceeded for this app key", status=403), "auth"),
+    (NexconnError("quota exceeded for this app key", code=1003), "auth"),
+    (NexconnError("User registration limit exceeded for this app key", status=429), "unknown"),
+    (NexconnError("app key rejected", status=429, code=1002), "unknown"),
+    (NexconnError("app key rejected", code=429), "unknown"),
+    (NexconnError("app key rejected", status=503, code=1002), "server"),
     (NexconnError("app-key expired"), "auth"),
     (NexconnError("chat not enabled"), "auth"),
     (NexconnError("free plan ended"), "auth"),
@@ -296,6 +303,38 @@ def test_registration_capacity_does_not_take_upstream_offline(error):
     for _ in range(3):
         monitor.failure(error, registration=True)
     assert not monitor.offline
+
+
+@pytest.mark.parametrize("error", [
+    NexconnError("User registration limit exceeded for this app key", status=429),
+    NexconnError("User quota exceeded for this app key", code=1008, status=200),
+    NexconnError("User limit reached for this app-key"),
+    NexconnError("User count exceeds this appkey subscription"),
+    NexconnError("Too many users for these credentials"),
+    NexconnError("Too-many users for this app key"),
+    NexconnError("app key registration refused", code=429),
+])
+def test_registration_capacity_with_auth_words_keeps_existing_capacity_path(make_offline_app, error):
+    c, fake, monitor, _ = make_offline_app()
+    fake.error, fake.fail_method = error, "issue_token"
+    for name in ("First", "Second", "Third"):
+        owner = start(c, name)
+        assert not monitor.offline
+        assert owner["chat_mode"] == "mock" and owner["fallback"]["reason"] == "capacity"
+        assert c.get("/nexconn/config").json()["mode"] == "live"
+    assert c.app.state.playground.registry.counter("live_users_registered") == 0
+    fake.error = None
+    assert start(c, "Recovered")["chat_mode"] == "live"
+
+
+def test_non_registration_capacity_with_auth_words_counts_as_unrecognised_failure():
+    monitor = UpstreamMonitor()
+    error = NexconnError("Message limit exceeded for this app key", status=429)
+    monitor.failure(error)
+    monitor.failure(error)
+    assert not monitor.offline
+    monitor.failure(error)
+    assert monitor.offline and monitor.snapshot()["reason"] == "unknown"
 
 
 @pytest.mark.parametrize("setting, value", [("NEXCONN_FALLBACK", "maybe"),
