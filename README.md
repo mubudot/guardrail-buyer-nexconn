@@ -16,7 +16,7 @@
 > agent and a simulated PayPal checkout. Ask for something under the limit (bought right away), over it
 > (an approval card appears in your room: approve or reject it there), or a gift card (always refused),
 > then pay on the simulated checkout and invite a teammate as a second approver. No sign-up, no e-mail,
-> no real money; sandboxes are deleted after 24 h of inactivity. [How it works](#try-it-no-token-needed).
+> no real money; after 24 h of inactivity a sandbox closes and its data on the server is deleted (chat messages stay on Nexconn). [How it works](#try-it-no-token-needed).
 
 *The base app was built for the PayPal AI Hackathon (2026) (demo video for that version: https://youtu.be/6pp8X-yFJwk). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
 
@@ -469,7 +469,7 @@ read well in any Nexconn client. The mock does not emulate Nexconn beyond what t
 | | What | Where |
 |---|---|---|
 | **Existed before** (built Oct 29–30, 2026 for the PayPal AI Hackathon; public at [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer)) | guardrail policy engine, PayPal Orders v2 Sandbox integration, Claude and offline agents, MCP server, AG Grid dashboard | the rest of the code base |
-| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, 70 new tests | `app/nexconn/`, `app/static/chat.html`, `chat.js`, `chat-transport.js`, `chat-reconcile.js`, `chat.css`, `tests/test_nexconn_*.py`; small edits to existing files: an observer hook on approval events (`app/service.py`), wiring of the channel and routes (`app/main.py`), an "Approval chat" link and style on the dashboard, `NEXCONN_*` in `.env.example`, `NEXCONN_APP_SECRET` added to the MCP credential scrub, test fixtures, docs and counts |
+| **Built for the Nexconn challenge** (from Oct 30, 2026) | Nexconn Platform Chat API client (signing, data-center failover), signed `message:send` webhook receiver (time window, single-use nonces), approval channel (cards, decisions, approver allowlist, outbox + retry, recovery), approver chat page on the Nexconn Web Chat SDK, offline mock of the room, live deployment, the `/try` playground, 118 new tests | `app/nexconn/`, `app/playground/`, `app/static/chat.html`, `chat.js`, `chat-room.js`, `chat-transport.js`, `chat-reconcile.js`, `chat.css`, `try.*`, `tests/test_nexconn_*.py`, `tests/test_playground*.py`, `tests/test_try_js.py`; small edits to existing files: an observer hook on approval events (`app/service.py`), wiring of the channel and routes (`app/main.py`), an "Approval chat" link and style on the dashboard, `NEXCONN_*` in `.env.example`, `NEXCONN_APP_SECRET` added to the MCP credential scrub, test fixtures, docs and counts |
 
 The git history shows the split: commits up to `25627cc` are the PayPal version (identical to the public
 PayPal repo); the Nexconn work starts at the commit "Nexconn chat approval channel". Later fixes from the

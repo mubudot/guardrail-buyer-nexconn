@@ -24,17 +24,17 @@ For this challenge we added a **Nexconn approval room**:
 3. The decision comes back to the server through Nexconn's signed `message:send` webhook and runs through the
    **same guarded code path as the dashboard**: hard rules are re-checked, the approval is bound to its price
    quote and can be claimed only once. Approval waives only the soft caps.
-4. The outcome — PayPal order created, paid, refused by a hard rule, or rejected — is posted back into the
-   room, with who decided and where. Decisions made on the dashboard are mirrored into the room too, so the chat
+4. The outcome of the decision — PayPal order created, refused by a hard rule, or rejected — is posted back
+   into the room, with who decided and where (later payment events are tracked on the dashboard). Decisions made on the dashboard are mirrored into the room too, so the chat
    shows every approval request and how it ended (the dashboard's audit log stays the full record of all
    guardrail decisions, including automatic in-policy purchases and denials).
 
-**Try it in one click (`/try`).** Anyone can open a private sandbox with no account and no token: the server
-registers the visitor as a real Nexconn user, creates a private approval group for them, and gives them their own
+**Try it in one click (`/try`).** Anyone can open a private sandbox with no account and no token: in live mode
+the server registers the visitor as a real Nexconn user, creates a private approval group for them, and gives them their own
 policy and database (simulated checkout, no money). An invite link adds a teammate as a second approver, so two
 people can see the same card and one of them decides it in the chat. Sandboxes are rate-limited, capped, expire
-after 24 idle hours and can be reset; past the live-registration cap the playground falls back to an offline
-stand-in so the main room is never affected.
+after 24 idle hours (their data on our server is deleted) and can be reset; past the live-registration cap, new
+sandboxes use an offline stand-in for the chat, and the main room is never affected.
 
 ## Features that use Nexconn
 
@@ -66,7 +66,7 @@ later fixes from the PayPal repo were merged in.
 - Only configured approvers can decide; a decision must name the approval id; the bot cannot approve.
 - Every Nexconn message is acted on at most once (webhook retries and replays are absorbed).
 - The App Secret never leaves the server; the browser gets the App Key and a per-approver token only.
-- A Nexconn outage never blocks or changes a purchase; failed posts are kept and can be re-sent.
+- A failed chat post never rolls back or changes a purchasing decision; failed posts are kept and can be re-sent. Deciding in chat needs Nexconn to be reachable; the dashboard can always decide.
 - With the channel off, the app behaves exactly as before (all earlier tests still pass).
 
 ## Business potential
