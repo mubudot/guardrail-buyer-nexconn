@@ -153,15 +153,26 @@ class NexconnClient:
                 if e.code != ALREADY_MEMBER:
                     raise
 
+    @staticmethod
+    def _message_id(data: dict[str, Any], group_id: str) -> str:
+        result = data.get("result")
+        ids = result.get("messageIds") if isinstance(result, dict) else None
+        ids = [m for m in ids if isinstance(m, dict) and m.get("messageId")] if isinstance(ids, list) else []
+        for m in ids:
+            if m.get("channelId") == group_id:
+                return str(m["messageId"])
+        if ids:
+            return str(ids[0]["messageId"])
+        raise NexconnError("group-channel/message/send: response has no messageId")
+
     def send_group_text(self, from_user: str, group_id: str, text: str, extra: dict | None = None) -> str:
+        # the message id is validated inside the monitored call, so an unusable 200 counts toward the
+        # unrecognised-failure threshold instead of being recorded as a success
         data = self._post("/v4/group-channel/message/send", {
             "fromUserId": from_user, "toChannelIds": [group_id], "messageType": "RC:TxtMsg",
-            "content": text_content(text, extra), "shouldPersist": 1, "isEchoToSender": 0})
-        ids = (data.get("result") or {}).get("messageIds") or []
-        for m in ids:
-            if isinstance(m, dict) and m.get("channelId") == group_id and m.get("messageId"):
-                return str(m["messageId"])
-        return str(ids[0].get("messageId")) if ids and isinstance(ids[0], dict) else ""
+            "content": text_content(text, extra), "shouldPersist": 1, "isEchoToSender": 0},
+            check=lambda d: self._message_id(d, group_id))
+        return self._message_id(data, group_id)
 
 
 class MockNexconn:

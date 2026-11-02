@@ -297,3 +297,30 @@ def test_try_failed_initial_room_start_is_retried_from_the_state_poll_with_backo
     out = json.loads(proc.stdout)
     assert (out["initial"], out["beforeBackoff"], out["secondTry"], out["stillWaiting"], out["thirdTry"]) == (1, 1, 2, 2, 3)
     assert out["after"] == 3 and out["transports"] == ["mock"] and out["session"] == "mock"
+
+
+# Review R5: the session is issued but the transport fails to start (e.g. a 503 loading the mock room
+# history). The half-started room must be dropped so the state poll retries with backoff.
+TRY_TRANSPORT_RETRY = TRY_ROOM_RETRY.replace(
+    "let mode = 'live', now = 1_000_000, sessionAnswers = [409, 409, 200];",
+    "let mode = 'mock', now = 1_000_000, sessionAnswers = [200, 200, 200, 200], startFailures = 1, stops = 0;",
+).replace(
+    "{createTransport: async (s) => { transports.push(s.mode); return {async start() {}, stop() {}}; }}",
+    "{createTransport: async (s) => { transports.push(s.mode); return {async start() {"
+    " if (startFailures-- > 0) { const e = Error('history 503'); e.status = 503; throw e; } }, stop() { stops++; }}; }}",
+).replace(
+    "const out = {initial: sessions()};\nmode = 'mock';",
+    "const out = {initial: sessions(), clearedAfterFailure: page.namespace.state.session === null, stops};",
+)
+
+
+@pytest.mark.skipif(NODE is None, reason="node not available")
+def test_try_failed_transport_start_drops_the_room_and_is_retried():
+    proc = subprocess.run([NODE, "--experimental-vm-modules", "--input-type=module", "-e", TRY_TRANSPORT_RETRY,
+                           str(STATIC / "try.js")], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["initial"] == 1 and out["clearedAfterFailure"] is True and out["stops"] == 1   # failed transport stopped
+    # 4 s backoff: no retry at +1 s, retried at +5 s and the room comes up; no further session requests
+    assert (out["beforeBackoff"], out["secondTry"], out["stillWaiting"], out["thirdTry"], out["after"]) == (1, 2, 2, 2, 2)
+    assert out["transports"] == ["mock", "mock"] and out["session"] == "mock"

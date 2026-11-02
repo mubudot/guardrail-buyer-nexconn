@@ -779,3 +779,35 @@ def test_valid_token_answer_still_counts_as_success_and_resets_the_streak():
         except NexconnError:
             outcomes.append(None)
     assert outcomes == [None, None, "T", None, None] and not monitor.offline
+
+
+@pytest.mark.parametrize("body", [{"code": 0, "result": {}}, {"code": 0, "result": "x"},
+                                  {"code": 0, "result": {"messageIds": []}},
+                                  {"code": 0, "result": {"messageIds": [{"channelId": "g", "messageId": ""}]}}])
+def test_unusable_send_answers_count_as_failures_not_successes(body):
+    """Review R5: a 200 send without a message id is not a success: three in a row switch to the stand-in."""
+    client = NexconnClient(LIVE, http=httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=body))))
+    client.upstream = monitor = UpstreamMonitor()
+    for _ in range(3):
+        assert not monitor.offline
+        with pytest.raises(NexconnError, match="no messageId"):
+            client.send_group_text("bot", "g", "hello")
+    assert monitor.offline and monitor.snapshot()["reason"] == "unknown"
+
+
+def test_valid_send_answer_returns_id_and_resets_the_streak():
+    answers = iter([{"code": 0, "result": {}}, {"code": 0, "result": {}},
+                    {"code": 0, "result": {"messageIds": [{"channelId": "other", "messageId": "X"},
+                                                          {"channelId": "g", "messageId": "M1"}]}},
+                    {"code": 0, "result": {}}, {"code": 0, "result": {}}])
+    client = NexconnClient(LIVE, http=httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=next(answers)))))
+    client.upstream = monitor = UpstreamMonitor()
+    outcomes = []
+    for _ in range(5):
+        try:
+            outcomes.append(client.send_group_text("bot", "g", "hello"))
+        except NexconnError:
+            outcomes.append(None)
+    assert outcomes == [None, None, "M1", None, None] and not monitor.offline

@@ -76,4 +76,15 @@ Changes made in 02efcd4 before committing:
   finds no room session and no start in progress, it starts the room again, backing off 4 s doubling up to 60 s; the
   error toast is shown once per failure streak. Checked again in Chromium (forced mode, desktop and mobile, no console
   errors). 622 passed + 3 skipped.
-- Stopped here: four review rounds, each finding fewer and smaller issues; this last fix was not re-reviewed by Codex.
+
+## Independent Codex review, round 5 (fresh session, before deploy)
+- The R4 fix and the switch rule verified end to end (healthy upstream stays live: a single slow request, a visitor's
+  SDK hint and startup ordering do not flip it); 622 passed + 3 skipped.
+- P2: the R4 retry only covered a missing session. If the session was issued but the stand-in transport failed to
+  start (e.g. a 503 loading the room history), the half-started room kept its session and was never retried.
+- P2: a message-send answer of 200 without a message id was recorded as a success (unlike the token answer), so
+  repeated unusable send answers never counted toward the fallback.
+- Fixed (maintainer, 6 new tests, failing on the old code): a room whose transport never started is dropped (transport
+  stopped, session cleared) and retried from the state poll with the same backoff, which resets only once the transport
+  is up; the send answer's message id is validated inside the monitored call. Real Nexconn sends on the server always
+  carried message ids, so live behaviour is unchanged. 628 passed + 3 skipped.

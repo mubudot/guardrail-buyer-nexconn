@@ -236,12 +236,12 @@ function startRoom() {
   if (roomStarting) return roomStarting;
   const gen = roomGen;
   const stale = () => gen !== roomGen;   // the sandbox expired / was replaced while this start was running
+  let up = false;   // set once the transport has started: later errors (history sync) keep the room
   const p = (async () => {
     try {
       const session = await api("/try/session", {method: "POST"});
       if (stale()) return;
       state.session = session;
-      roomFailures = 0; roomRetryAt = 0;
       setChatMode(session.mode);
       sdkWatch?.stop();
       sdkWatch = session.mode === "live" ? watchSdk(() => fallbackForSdk()) : null;
@@ -251,6 +251,8 @@ function startRoom() {
       await transport.start((messages) => { if (!stale()) room.onMessages(messages); },
                             (status) => { if (!stale()) setConn(status); });
       if (stale()) { transport.stop(); return; }
+      up = true;
+      roomFailures = 0; roomRetryAt = 0;   // the room is up: a later failure starts a fresh backoff
       await room.syncApprovals();
       refresh();
     } catch (e) {
@@ -258,7 +260,12 @@ function startRoom() {
       if (e.status === 404 || e.status === 401) { expired(e.message); return; }
       sdkWatch?.fail();
       setConn("not connected");
-      if (!state.session) {   // no room at all: the state poll retries (4 s doubling, at most 60 s apart)
+      if (!up) {
+        // The room never came up (no session, or its transport failed to start, e.g. a 503 loading the
+        // history): drop the half-started room so the state poll retries (4 s doubling, at most 60 s apart).
+        try { state.transport?.stop(); } catch { /* already stopped */ }
+        state.transport = null; state.session = null;
+        room.clear();
         roomRetryAt = Date.now() + Math.min(POLL_MS * 2 ** roomFailures, 60000);
         roomFailures++;
       }
