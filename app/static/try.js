@@ -17,6 +17,7 @@ const state = {secret: localStorage.getItem(KEY) || "", sandbox: null, session: 
 const loc = parseLocation(location.pathname, location.search);
 let roomStarting = null, roomGen = 0;   // the pending room start (shared by concurrent callers), room generation
 let roomFailures = 0, roomRetryAt = 0;   // a failed room start is retried from the state poll, with backoff
+let roomsUp = 0;   // counts rooms whose transport came up; a newer healthy room cancels a pending SDK fallback
 let sdkWatch = null, sdkFallbackPending = false;
 
 const room = createRoom({
@@ -251,7 +252,7 @@ function startRoom() {
       await transport.start((messages) => { if (!stale()) room.onMessages(messages); },
                             (status) => { if (!stale()) setConn(status); });
       if (stale()) { transport.stop(); return; }
-      up = true;
+      up = true; roomsUp++;
       roomFailures = 0; roomRetryAt = 0;   // the room is up: a later failure starts a fresh backoff
       await room.syncApprovals();
       refresh();
@@ -287,7 +288,9 @@ async function restartRoom() {
 
 async function fallbackForSdk() {
   if (sdkFallbackPending) return;
-  const gen = roomGen, secret = state.secret, current = () => gen === roomGen && secret === state.secret;
+  const gen = roomGen, secret = state.secret, ups = roomsUp;
+  // stop once the room restarted, the session changed, or a retried room connected meanwhile (it is healthy)
+  const current = () => gen === roomGen && secret === state.secret && ups === roomsUp;
   sdkFallbackPending = true;
   try {
     // The watchdog fires once; a busy sandbox (409) or the rate limit (429) must not leave a dead live

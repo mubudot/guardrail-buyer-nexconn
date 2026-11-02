@@ -88,3 +88,9 @@ Changes made in 02efcd4 before committing:
   stopped, session cleared) and retried from the state poll with the same backoff, which resets only once the transport
   is up; the send answer's message id is validated inside the monitored call. Real Nexconn sends on the server always
   carried message ids, so live behaviour is unchanged. 628 passed + 3 skipped.
+
+## Independent Codex review, round 6 (fresh session, focused on the R5 fix)
+- P2: a live room whose SDK start failed triggers the SDK fallback, which retries a busy (409/429) answer with
+  backoff; if the R5 retry then reconnected the room, the old fallback could still downgrade the healthy room later.
+- Fixed (maintainer, node regression test running the real page script, failing on the old code): a pending SDK
+  fallback stops as soon as a newer room's transport comes up. 629 passed + 3 skipped.

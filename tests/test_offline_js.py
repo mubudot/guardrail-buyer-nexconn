@@ -324,3 +324,47 @@ def test_try_failed_transport_start_drops_the_room_and_is_retried():
     # 4 s backoff: no retry at +1 s, retried at +5 s and the room comes up; no further session requests
     assert (out["beforeBackoff"], out["secondTry"], out["stillWaiting"], out["thirdTry"], out["after"]) == (1, 2, 2, 2, 2)
     assert out["transports"] == ["mock", "mock"] and out["session"] == "mock"
+
+
+# Review R6: a live room whose SDK start failed triggers the SDK fallback (retrying 409s with backoff); if the
+# room retry then connects, the pending fallback must not downgrade the now healthy room.
+TRY_SDK_FALLBACK_CANCEL = TRY_ROOM_RETRY.replace(
+    "let mode = 'live', now = 1_000_000, sessionAnswers = [409, 409, 200];",
+    "let mode = 'live', now = 1_000_000, sessionAnswers = [200, 200, 200], startFailures = 1; const timers = [];",
+).replace(
+    "setTimeout: () => 1,", "setTimeout: (fn, ms) => { timers.push([fn, ms]); return timers.length; },",
+).replace(
+    "    throw Error(`unexpected URL ${url}`);",
+    "    if (url === '/try/sdk-failed') return {ok: false, status: 409, headers: {get: () => null}, json: async () => ({})};\n"
+    "    throw Error(`unexpected URL ${url}`);",
+).replace(
+    "{createTransport: async (s) => { transports.push(s.mode); return {async start() {}, stop() {}}; }}",
+    "{createTransport: async (s) => { transports.push(s.mode); return {async start() {"
+    " if (startFailures-- > 0) throw Error('sdk connect failed'); }, stop() {}}; }}",
+).replace(
+    "sdkRetryDelay: () => null, watchSdk: () => ({status() {}, fail() {}, stop() {}})",
+    "sdkRetryDelay: (status) => (status === 409 ? 30000 : null),"
+    " watchSdk: (cb) => { let done = false; return {status() {}, fail() { if (!done) { done = true; cb(); } }, stop() { done = true; }}; }",
+).replace(
+    "const out = {initial: sessions()};\nmode = 'mock';",
+    "const hints = () => requests.filter((u) => u === '/try/sdk-failed').length;\n"
+    "const out = {initial: sessions(), hintsBefore: hints()};\n"
+    "now += 5000; await polls[0](); await tick();\n"
+    "out.retried = sessions();\n"
+    "for (const [fn, ms] of timers.splice(0)) if (ms === 30000) fn();\n"
+    "await tick();\n"
+    "out.hintsAfter = hints();\n"
+    "console.log(JSON.stringify({...out, transports, session: page.namespace.state.session?.mode ?? null}));\n"
+    "process.exit(0);\n",
+)
+
+
+@pytest.mark.skipif(NODE is None, reason="node not available")
+def test_try_pending_sdk_fallback_is_cancelled_when_the_retried_room_connects():
+    proc = subprocess.run([NODE, "--experimental-vm-modules", "--input-type=module", "-e", TRY_SDK_FALLBACK_CANCEL,
+                           str(STATIC / "try.js")], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["initial"] == 1 and out["hintsBefore"] == 1      # failed SDK start: one hint, answered 409
+    assert out["retried"] == 2 and out["transports"] == ["live", "live"] and out["session"] == "live"
+    assert out["hintsAfter"] == 1                               # the healthy retried room is not downgraded
